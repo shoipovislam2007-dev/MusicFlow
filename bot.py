@@ -15,8 +15,8 @@ from datetime import datetime
 
 # ---------- НАСТРОЙКИ ----------
 # Берем переменные из окружения (Railway) или используем значения по умолчанию
-API_TOKEN = os.getenv('API_TOKEN', 'ТВОЙ_ТОКЕН_СЮДА')
-ADMIN_ID = int(os.getenv('ADMIN_ID', 123456789))  # ТВОЙ ID
+API_TOKEN = os.getenv('API_TOKEN', '8973047993:AAGGJWwmcMRK9eiBOYM8sOKXPs_zuTHhh78')
+ADMIN_ID = int(os.getenv('ADMIN_ID', 7921694564))  # ТВОЙ ID
 STORAGE_FILE = 'music_library.json'
 USER_PLAYLISTS_FILE = 'user_playlists.json'
 DONATIONS_FILE = 'donations.json'
