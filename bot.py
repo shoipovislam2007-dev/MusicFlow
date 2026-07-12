@@ -9,17 +9,15 @@ from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from datetime import datetime
 
 # ---------- НАСТРОЙКИ ----------
-# Берем переменные из окружения (Railway) или используем значения по умолчанию
 API_TOKEN = os.getenv('API_TOKEN', '8973047993:AAGGJWwmcMRK9eiBOYM8sOKXPs_zuTHhh78')
-ADMIN_ID = int(os.getenv('ADMIN_ID', 7921694564))  # ТВОЙ ID
+ADMIN_ID = int(os.getenv('ADMIN_ID', 7921694564))
 STORAGE_FILE = 'music_library.json'
 USER_PLAYLISTS_FILE = 'user_playlists.json'
-DONATIONS_FILE = 'donations.json'
 
 logging.basicConfig(level=logging.INFO)
 storage = MemoryStorage()
@@ -41,7 +39,6 @@ class AdminStates(StatesGroup):
     waiting_for_playlist_name = State()
     waiting_for_playlist_track = State()
     waiting_for_playlist_delete = State()
-    waiting_donate_amount = State()
 
 # ---------- РАБОТА С БАЗОЙ ----------
 def load_library():
@@ -70,20 +67,9 @@ def save_user_playlists(playlists):
     with open(USER_PLAYLISTS_FILE, 'w', encoding='utf-8') as f:
         json.dump(playlists, f, indent=2, ensure_ascii=False)
 
-def load_donations():
-    if os.path.exists(DONATIONS_FILE):
-        try:
-            with open(DONATIONS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            return {"total": 0, "users": {}}
-    return {"total": 0, "users": {}}
-
-def save_donations(data):
-    with open(DONATIONS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
 def get_track_duration(seconds):
+    if not seconds:
+        return "0:00"
     minutes = seconds // 60
     seconds = seconds % 60
     return f"{minutes}:{seconds:02d}"
@@ -108,7 +94,6 @@ def get_main_menu():
     
     builder.row(
         InlineKeyboardButton(text="➕ Создать плейлист", callback_data="create_playlist"),
-        InlineKeyboardButton(text="⭐ Поддержать", callback_data="support"),
         width=2
     )
     
@@ -132,11 +117,6 @@ def get_admin_panel():
         InlineKeyboardButton(text="📊 Список треков", callback_data="admin_list"),
         InlineKeyboardButton(text="📈 Статистика", callback_data="admin_stats"),
         width=2
-    )
-    
-    builder.row(
-        InlineKeyboardButton(text="💎 Донаты", callback_data="admin_donations"),
-        width=1
     )
     
     builder.row(
@@ -266,9 +246,6 @@ async def handle_text_message(message: types.Message):
         "• 🎻 Классика\n"
         "• 🎧 Lo-Fi Chill\n"
         "• 🌿 Природа\n\n"
-        "⭐ *Поддержка:*\n"
-        "• Нажми 'Поддержать' в меню\n"
-        "• Отправь Telegram Stars\n\n"
         "👑 *Админ-команды:*\n"
         "• `/add` - Добавить трек\n"
         "• `/delete` - Удалить трек\n"
@@ -293,7 +270,6 @@ async def cmd_start(message: types.Message):
         "• 🌿 Природа\n\n"
         "📋 Создавай свои плейлисты\n"
         "⚡ Мгновенная загрузка\n"
-        "⭐ Поддержи проект Telegram Stars"
     )
     
     await message.answer(
@@ -335,44 +311,25 @@ async def cmd_random(message: types.Message):
     
     category, track_id, track_data = random.choice(all_tracks)
     
-    await message.answer_audio(
-        track_data['file_id'],
-        caption=(
-            f"🎲 *Случайный трек*\n\n"
-            f"🎵 *Название:* {track_data.get('title', 'Без названия')}\n"
-            f"📁 *Категория:* {CATEGORIES[category]['name']}\n"
-            f"⏱ *Длительность:* {get_track_duration(track_data.get('duration', 0))}"
-        ),
-        parse_mode="Markdown",
-        reply_markup=get_main_menu()
-    )
-
-@dp.message(Command("donate"))
-async def cmd_donate(message: types.Message):
-    args = message.text.split()
-    if len(args) < 2 or not args[1].isdigit():
+    try:
+        await message.answer_audio(
+            track_data['file_id'],
+            caption=(
+                f"🎲 *Случайный трек*\n\n"
+                f"🎵 *Название:* {track_data.get('title', 'Без названия')}\n"
+                f"📁 *Категория:* {CATEGORIES[category]['name']}\n"
+                f"⏱ *Длительность:* {get_track_duration(track_data.get('duration', 0))}"
+            ),
+            parse_mode="Markdown",
+            reply_markup=get_main_menu()
+        )
+    except Exception as e:
+        logging.error(f"Ошибка при воспроизведении: {e}")
         await message.answer(
-            "❌ *Укажи количество звезд:*\n"
-            "Пример: `/donate 10`",
+            "❌ *Ошибка при воспроизведении трека*\n\n"
+            "Возможно, файл был удален. Попробуйте другой трек.",
             parse_mode="Markdown"
         )
-        return
-    
-    amount = int(args[1])
-    if amount < 1 or amount > 2500:
-        await message.answer("❌ *От 1 до 2500 звёзд*", parse_mode="Markdown")
-        return
-    
-    prices = [LabeledPrice(label="⭐ Поддержка", amount=amount)]
-    
-    await message.answer_invoice(
-        title="⭐ Поддержка Music Flow",
-        description=f"Добровольное пожертвование {amount} Stars",
-        prices=prices,
-        provider_token="",
-        payload=f"donate_{amount}_{message.from_user.id}",
-        currency="XTR"
-    )
 
 # ---------- АДМИН-КОМАНДЫ ----------
 @dp.message(Command("add"))
@@ -429,29 +386,13 @@ async def admin_list(message: types.Message):
     
     text += f"\n📌 *Всего треков:* {total}"
     
-    await message.answer(text, parse_mode="Markdown")
-
-@dp.message(Command("donations"))
-async def admin_donations_cmd(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    donations = load_donations()
-    if not donations.get("users"):
-        await message.answer("💎 *Донатов пока нет*", parse_mode="Markdown")
-        return
-    
-    text = "💎 *Статистика донатов*\n\n"
-    text += f"⭐ Всего звёзд: {donations.get('total', 0)}\n"
-    text += f"👤 Всего донатеров: {len(donations['users'])}\n\n"
-    text += "*🏆 Топ донатеров:*\n"
-    
-    sorted_users = sorted(donations['users'].items(), key=lambda x: x[1]['total'], reverse=True)
-    for i, (uid, data) in enumerate(sorted_users[:10], 1):
-        stars = "⭐" * min(data['total'], 5) + ("+" if data['total'] > 5 else "")
-        text += f"{i}. {data['name']} — {data['total']}⭐ {stars}\n"
-    
-    await message.answer(text, parse_mode="Markdown")
+    # Разбиваем на части, если текст слишком длинный
+    if len(text) > 4000:
+        parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+        for part in parts:
+            await message.answer(part, parse_mode="Markdown")
+    else:
+        await message.answer(text, parse_mode="Markdown")
 
 # ---------- CALLBACK-ЗАПРОСЫ ----------
 @dp.callback_query(F.data.startswith("playlist_track_"))
@@ -484,22 +425,25 @@ async def play_playlist_track(callback: types.CallbackQuery):
     
     track_data = tracks[track_index]
     
-    await callback.message.answer_audio(
-        track_data['file_id'],
-        caption=(
-            f"🎵 *{track_data.get('title', 'Без названия')}*\n"
-            f"📁 *Плейлист:* {playlist_name}\n"
-            f"⏱ *Длительность:* {get_track_duration(track_data.get('duration', 0))}"
-        ),
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🔙 Назад в плейлист", callback_data=f"open_playlist_{playlist_name}")]
-            ]
+    try:
+        await callback.message.answer_audio(
+            track_data['file_id'],
+            caption=(
+                f"🎵 *{track_data.get('title', 'Без названия')}*\n"
+                f"📁 *Плейлист:* {playlist_name}\n"
+                f"⏱ *Длительность:* {get_track_duration(track_data.get('duration', 0))}"
+            ),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="🔙 Назад в плейлист", callback_data=f"open_playlist_{playlist_name}")]
+                ]
+            )
         )
-    )
-    
-    await callback.answer()
+        await callback.answer()
+    except Exception as e:
+        logging.error(f"Ошибка воспроизведения из плейлиста: {e}")
+        await callback.answer("❌ Ошибка при воспроизведении трека!")
 
 @dp.callback_query(F.data.startswith("play_"))
 async def play_category_track(callback: types.CallbackQuery):
@@ -517,24 +461,27 @@ async def play_category_track(callback: types.CallbackQuery):
     track_id = random.choice(list(library[category].keys()))
     track_data = library[category][track_id]
     
-    await callback.message.answer_audio(
-        track_data['file_id'],
-        caption=(
-            f"🎵 *Сейчас играет*\n\n"
-            f"*Название:* {track_data.get('title', 'Без названия')}\n"
-            f"📁 *Категория:* {CATEGORIES[category]['name']}\n"
-            f"⏱ *Длительность:* {get_track_duration(track_data.get('duration', 0))}"
-        ),
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🎲 Другой трек", callback_data=f"play_{category}")],
-                [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu")]
-            ]
+    try:
+        await callback.message.answer_audio(
+            track_data['file_id'],
+            caption=(
+                f"🎵 *Сейчас играет*\n\n"
+                f"*Название:* {track_data.get('title', 'Без названия')}\n"
+                f"📁 *Категория:* {CATEGORIES[category]['name']}\n"
+                f"⏱ *Длительность:* {get_track_duration(track_data.get('duration', 0))}"
+            ),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="🎲 Другой трек", callback_data=f"play_{category}")],
+                    [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu")]
+                ]
+            )
         )
-    )
-    
-    await callback.answer()
+        await callback.answer()
+    except Exception as e:
+        logging.error(f"Ошибка воспроизведения: {e}")
+        await callback.answer("❌ Ошибка при воспроизведении трека!")
 
 @dp.callback_query(F.data == "random")
 async def random_track(callback: types.CallbackQuery):
@@ -551,139 +498,22 @@ async def random_track(callback: types.CallbackQuery):
     
     category, track_id, track_data = random.choice(all_tracks)
     
-    await callback.message.answer_audio(
-        track_data['file_id'],
-        caption=(
-            f"🎲 *Случайный трек*\n\n"
-            f"*Название:* {track_data.get('title', 'Без названия')}\n"
-            f"📁 *Категория:* {CATEGORIES[category]['name']}\n"
-            f"⏱ *Длительность:* {get_track_duration(track_data.get('duration', 0))}\n"
-        ),
-        parse_mode="Markdown",
-        reply_markup=get_main_menu()
-    )
-    await callback.answer()
-
-# ---------- ПОДДЕРЖКА ----------
-@dp.callback_query(F.data == "support")
-async def support_menu(callback: types.CallbackQuery):
-    donations = load_donations()
-    total = donations.get("total", 0)
-    
-    await callback.message.answer(
-        f"⭐ *Поддержка проекта*\n\n"
-        f"❤️ Спасибо, что пользуешься Music Flow!\n\n"
-        f"📊 *Всего собрано:* {total} ⭐\n\n"
-        f"💰 *Курс:* 1⭐ ≈ 1.5₽ (комиссия Telegram ~30%)\n\n"
-        f"👇 *Выбери сумму для доната:*",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="⭐ 1 Star", callback_data="donate_1")],
-                [InlineKeyboardButton(text="⭐⭐ 5 Stars", callback_data="donate_5")],
-                [InlineKeyboardButton(text="⭐⭐⭐ 10 Stars", callback_data="donate_10")],
-                [InlineKeyboardButton(text="⭐ 25 Stars", callback_data="donate_25")],
-                [InlineKeyboardButton(text="⭐ 50 Stars", callback_data="donate_50")],
-                [InlineKeyboardButton(text="⭐ 100 Stars", callback_data="donate_100")],
-                [InlineKeyboardButton(text="✏️ Своя сумма", callback_data="donate_custom")],
-                [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
-            ]
-        ),
-        parse_mode="Markdown"
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("donate_"))
-async def donate_preset(callback: types.CallbackQuery, state: FSMContext):
-    if callback.data == "donate_custom":
-        await callback.message.answer(
-            "✏️ *Напиши количество Stars (от 1 до 2500):*",
-            parse_mode="Markdown"
+    try:
+        await callback.message.answer_audio(
+            track_data['file_id'],
+            caption=(
+                f"🎲 *Случайный трек*\n\n"
+                f"*Название:* {track_data.get('title', 'Без названия')}\n"
+                f"📁 *Категория:* {CATEGORIES[category]['name']}\n"
+                f"⏱ *Длительность:* {get_track_duration(track_data.get('duration', 0))}\n"
+            ),
+            parse_mode="Markdown",
+            reply_markup=get_main_menu()
         )
-        await state.set_state(AdminStates.waiting_donate_amount)
         await callback.answer()
-        return
-    
-    amount = int(callback.data.split("_")[1])
-    
-    prices = [LabeledPrice(label="⭐ Поддержка Music Flow", amount=amount)]
-    
-    await callback.message.answer_invoice(
-        title="⭐ Поддержка Music Flow",
-        description=f"Добровольное пожертвование {amount} Stars",
-        prices=prices,
-        provider_token="",
-        payload=f"donate_{amount}_{callback.from_user.id}",
-        currency="XTR"
-    )
-    await callback.answer()
-
-@dp.message(AdminStates.waiting_donate_amount)
-async def donate_custom_amount(message: types.Message, state: FSMContext):
-    if not message.text.isdigit():
-        await message.answer("❌ *Введи число!*", parse_mode="Markdown")
-        return
-    
-    amount = int(message.text)
-    if amount < 1 or amount > 2500:
-        await message.answer("❌ *От 1 до 2500 звёзд*", parse_mode="Markdown")
-        return
-    
-    prices = [LabeledPrice(label="⭐ Поддержка Music Flow", amount=amount)]
-    
-    await message.answer_invoice(
-        title="⭐ Поддержка Music Flow",
-        description=f"Добровольное пожертвование {amount} Stars",
-        prices=prices,
-        provider_token="",
-        payload=f"donate_{amount}_{message.from_user.id}",
-        currency="XTR"
-    )
-    await state.clear()
-
-# ---------- ОБРАБОТКА УСПЕШНОЙ ОПЛАТЫ ----------
-@dp.message(F.successful_payment)
-async def successful_payment(message: types.Message):
-    payment = message.successful_payment
-    amount = payment.total_amount
-    user_id = str(message.from_user.id)
-    username = message.from_user.full_name
-    
-    donations = load_donations()
-    donations["total"] += amount
-    
-    if user_id not in donations["users"]:
-        donations["users"][user_id] = {"name": username, "total": 0, "count": 0}
-    
-    donations["users"][user_id]["total"] += amount
-    donations["users"][user_id]["count"] += 1
-    donations["users"][user_id]["name"] = username
-    
-    save_donations(donations)
-    
-    stars_emoji = "⭐" * min(amount, 5) + ("+" if amount > 5 else "")
-    
-    await message.answer(
-        f"🎉 *Спасибо за поддержку!*\n\n"
-        f"{stars_emoji} Ты отправил {amount} ⭐\n"
-        f"❤️ Твой вклад помогает проекту развиваться!\n\n"
-        f"📊 *Всего собрано:* {donations['total']} ⭐",
-        reply_markup=get_main_menu(),
-        parse_mode="Markdown"
-    )
-    
-    if ADMIN_ID:
-        try:
-            await bot.send_message(
-                ADMIN_ID,
-                f"💎 *Новый донат!*\n\n"
-                f"👤 {username}\n"
-                f"⭐ {amount} Stars\n"
-                f"📊 Всего: {donations['total']}⭐\n"
-                f"👤 Всего донатеров: {len(donations['users'])}",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
+    except Exception as e:
+        logging.error(f"Ошибка воспроизведения: {e}")
+        await callback.answer("❌ Ошибка при воспроизведении трека!")
 
 # ---------- АДМИН-ДОБАВЛЕНИЕ ----------
 @dp.callback_query(F.data.startswith("cat_"))
@@ -700,7 +530,7 @@ async def admin_choose_category(callback: types.CallbackQuery, state: FSMContext
     await state.set_state(AdminStates.waiting_for_file)
     
     await callback.message.answer(
-        f"📤 *Отправь MP3-файл*\n\n"
+        f"📤 *Отправь аудиофайл*\n\n"
         f"📁 Категория: {CATEGORIES[category]['emoji']} {CATEGORIES[category]['name']}\n\n"
         f"⚡ *Быстрое добавление:*\n"
         f"• Файл НЕ скачивается на сервер\n"
@@ -762,7 +592,7 @@ async def admin_wrong_file(message: types.Message):
     if message.from_user.id == ADMIN_ID:
         await message.answer(
             "❌ *Неверный формат*\n\n"
-            "Отправь именно аудиофайл (MP3).",
+            "Отправь именно аудиофайл.",
             parse_mode="Markdown"
         )
 
@@ -869,7 +699,7 @@ async def add_to_playlist(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer(
         f"🎵 *Добавление трека в плейлист*\n\n"
         f"📁 Плейлист: {playlist_name}\n\n"
-        "Отправь аудиофайл (MP3), который хочешь добавить.\n"
+        "Отправь аудиофайл, который хочешь добавить.\n"
         "В подписи к файлу укажи название трека.\n\n"
         "⚡ *Файл не скачивается, загружается мгновенно!*",
         parse_mode="Markdown"
@@ -935,7 +765,7 @@ async def add_track_to_playlist(message: types.Message, state: FSMContext):
 @dp.message(AdminStates.waiting_for_playlist_track)
 async def wrong_track_for_playlist(message: types.Message):
     await message.answer(
-        "❌ Отправь именно аудиофайл (MP3)!",
+        "❌ Отправь именно аудиофайл!",
         parse_mode="Markdown"
     )
 
@@ -1043,16 +873,20 @@ async def random_from_playlist(callback: types.CallbackQuery):
     
     track_data = random.choice(tracks)
     
-    await callback.message.answer_audio(
-        track_data['file_id'],
-        caption=(
-            f"🎲 *Случайный трек из '{playlist_name}'*\n\n"
-            f"🎵 *Название:* {track_data.get('title', 'Без названия')}\n"
-            f"⏱ *Длительность:* {get_track_duration(track_data.get('duration', 0))}"
-        ),
-        parse_mode="Markdown"
-    )
-    await callback.answer()
+    try:
+        await callback.message.answer_audio(
+            track_data['file_id'],
+            caption=(
+                f"🎲 *Случайный трек из '{playlist_name}'*\n\n"
+                f"🎵 *Название:* {track_data.get('title', 'Без названия')}\n"
+                f"⏱ *Длительность:* {get_track_duration(track_data.get('duration', 0))}"
+            ),
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+    except Exception as e:
+        logging.error(f"Ошибка воспроизведения: {e}")
+        await callback.answer("❌ Ошибка при воспроизведении трека!")
 
 @dp.callback_query(F.data.startswith("remove_playlist_"))
 async def remove_playlist(callback: types.CallbackQuery):
@@ -1212,7 +1046,12 @@ async def admin_list_callback(callback: types.CallbackQuery):
     
     text += f"\n📌 *Всего треков:* {total}"
     
-    await callback.message.answer(text, parse_mode="Markdown")
+    if len(text) > 4000:
+        parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+        for part in parts:
+            await callback.message.answer(part, parse_mode="Markdown")
+    else:
+        await callback.message.answer(text, parse_mode="Markdown")
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_stats")
@@ -1223,7 +1062,6 @@ async def admin_stats(callback: types.CallbackQuery):
     
     library = load_library()
     playlists = load_user_playlists()
-    donations = load_donations()
     
     total_tracks = sum(len(tracks) for tracks in library.values())
     total_users = len(playlists)
@@ -1235,9 +1073,7 @@ async def admin_stats(callback: types.CallbackQuery):
     stats_text += f"📁 *Категорий:* {len(CATEGORIES)}\n"
     stats_text += f"👤 *Пользователей:* {total_users}\n"
     stats_text += f"📋 *Плейлистов:* {total_playlists}\n"
-    stats_text += f"🎵 *Треков в плейлистах:* {total_user_tracks}\n"
-    stats_text += f"⭐ *Собрано звёзд:* {donations.get('total', 0)}\n"
-    stats_text += f"💎 *Донатеров:* {len(donations.get('users', {}))}\n\n"
+    stats_text += f"🎵 *Треков в плейлистах:* {total_user_tracks}\n\n"
     
     stats_text += "*По основным категориям:*\n"
     for key, cat in CATEGORIES.items():
@@ -1245,31 +1081,6 @@ async def admin_stats(callback: types.CallbackQuery):
         stats_text += f"{cat['emoji']} {cat['name']}: {count} треков\n"
     
     await callback.message.answer(stats_text, parse_mode="Markdown")
-    await callback.answer()
-
-@dp.callback_query(F.data == "admin_donations")
-async def admin_donations(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("⛔ Доступ запрещен!")
-        return
-    
-    donations = load_donations()
-    if not donations.get("users"):
-        await callback.message.answer("💎 *Донатов пока нет*", parse_mode="Markdown")
-        await callback.answer()
-        return
-    
-    text = "💎 *Статистика донатов*\n\n"
-    text += f"⭐ Всего звёзд: {donations.get('total', 0)}\n"
-    text += f"👤 Всего донатеров: {len(donations['users'])}\n\n"
-    text += "*🏆 Топ донатеров:*\n"
-    
-    sorted_users = sorted(donations['users'].items(), key=lambda x: x[1]['total'], reverse=True)
-    for i, (uid, data) in enumerate(sorted_users[:10], 1):
-        stars = "⭐" * min(data['total'], 5) + ("+" if data['total'] > 5 else "")
-        text += f"{i}. {data['name']} — {data['total']}⭐ {stars}\n"
-    
-    await callback.message.answer(text, parse_mode="Markdown")
     await callback.answer()
 
 @dp.callback_query(F.data == "back_to_menu")
@@ -1307,14 +1118,11 @@ async def main():
     print("  /start   - Главное меню")
     print("  /menu    - Показать меню")
     print("  /random  - Случайный трек")
-    print("  /donate  - Быстрый донат Stars")
     print("\n📌 Админ-команды:")
     print("  /add      - Добавить трек")
     print("  /delete   - Удалить трек")
     print("  /list     - Список треков")
-    print("  /donations - Статистика донатов")
     print("=" * 40)
-    print("⭐ Система Telegram Stars активна!")
     print("🤖 Бот запущен!")
 
     await dp.start_polling(bot)
