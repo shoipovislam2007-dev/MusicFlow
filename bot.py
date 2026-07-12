@@ -4,19 +4,19 @@ import os
 import json
 import random
 import time
-import hashlib
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, URLInputFile, LabeledPrice
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from datetime import datetime
 
 # ---------- НАСТРОЙКИ ----------
-API_TOKEN = '8973047993:AAGGJWwmcMRK9eiBOYM8sOKXPs_zuTHhh78'
-ADMIN_ID = 7921694564  # ТВОЙ ID
+# Берем переменные из окружения (Railway) или используем значения по умолчанию
+API_TOKEN = os.getenv('API_TOKEN', 'ТВОЙ_ТОКЕН_СЮДА')
+ADMIN_ID = int(os.getenv('ADMIN_ID', 123456789))  # ТВОЙ ID
 STORAGE_FILE = 'music_library.json'
 USER_PLAYLISTS_FILE = 'user_playlists.json'
 DONATIONS_FILE = 'donations.json'
@@ -46,8 +46,11 @@ class AdminStates(StatesGroup):
 # ---------- РАБОТА С БАЗОЙ ----------
 def load_library():
     if os.path.exists(STORAGE_FILE):
-        with open(STORAGE_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(STORAGE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
     return {}
 
 def save_library(library):
@@ -56,8 +59,11 @@ def save_library(library):
 
 def load_user_playlists():
     if os.path.exists(USER_PLAYLISTS_FILE):
-        with open(USER_PLAYLISTS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(USER_PLAYLISTS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
     return {}
 
 def save_user_playlists(playlists):
@@ -66,8 +72,11 @@ def save_user_playlists(playlists):
 
 def load_donations():
     if os.path.exists(DONATIONS_FILE):
-        with open(DONATIONS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(DONATIONS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {"total": 0, "users": {}}
     return {"total": 0, "users": {}}
 
 def save_donations(data):
@@ -340,7 +349,6 @@ async def cmd_random(message: types.Message):
 
 @dp.message(Command("donate"))
 async def cmd_donate(message: types.Message):
-    """Команда /donate [количество] - быстрый донат"""
     args = message.text.split()
     if len(args) < 2 or not args[1].isdigit():
         await message.answer(
@@ -365,129 +373,6 @@ async def cmd_donate(message: types.Message):
         payload=f"donate_{amount}_{message.from_user.id}",
         currency="XTR"
     )
-
-# ---------- ПОДДЕРЖКА (TELEGRAM STARS) ----------
-@dp.callback_query(F.data == "support")
-async def support_menu(callback: types.CallbackQuery):
-    donations = load_donations()
-    total = donations.get("total", 0)
-    
-    await callback.message.answer(
-        f"⭐ *Поддержка проекта*\n\n"
-        f"❤️ Спасибо, что пользуешься Music Flow!\n\n"
-        f"📊 *Всего собрано:* {total} ⭐\n\n"
-        f"💰 *Курс:* 1⭐ ≈ 1.5₽ (комиссия Telegram ~30%)\n\n"
-        f"👇 *Выбери сумму для доната:*",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="⭐ 1 Star", callback_data="donate_1")],
-                [InlineKeyboardButton(text="⭐⭐ 5 Stars", callback_data="donate_5")],
-                [InlineKeyboardButton(text="⭐⭐⭐ 10 Stars", callback_data="donate_10")],
-                [InlineKeyboardButton(text="⭐ 25 Stars", callback_data="donate_25")],
-                [InlineKeyboardButton(text="⭐ 50 Stars", callback_data="donate_50")],
-                [InlineKeyboardButton(text="⭐ 100 Stars", callback_data="donate_100")],
-                [InlineKeyboardButton(text="✏️ Своя сумма", callback_data="donate_custom")],
-                [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
-            ]
-        ),
-        parse_mode="Markdown"
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("donate_"))
-async def donate_preset(callback: types.CallbackQuery):
-    if callback.data == "donate_custom":
-        await callback.message.answer(
-            "✏️ *Напиши количество Stars (от 1 до 2500):*",
-            parse_mode="Markdown"
-        )
-        await dp.fsm.set_state(callback.from_user.id, AdminStates.waiting_donate_amount)
-        await callback.answer()
-        return
-    
-    amount = int(callback.data.split("_")[1])
-    
-    prices = [LabeledPrice(label="⭐ Поддержка Music Flow", amount=amount)]
-    
-    await callback.message.answer_invoice(
-        title="⭐ Поддержка Music Flow",
-        description=f"Добровольное пожертвование {amount} Stars",
-        prices=prices,
-        provider_token="",
-        payload=f"donate_{amount}_{callback.from_user.id}",
-        currency="XTR"
-    )
-    await callback.answer()
-
-@dp.message(AdminStates.waiting_donate_amount)
-async def donate_custom_amount(message: types.Message, state: FSMContext):
-    if not message.text.isdigit():
-        await message.answer("❌ *Введи число!*", parse_mode="Markdown")
-        return
-    
-    amount = int(message.text)
-    if amount < 1 or amount > 2500:
-        await message.answer("❌ *От 1 до 2500 звёзд*", parse_mode="Markdown")
-        return
-    
-    prices = [LabeledPrice(label="⭐ Поддержка Music Flow", amount=amount)]
-    
-    await message.answer_invoice(
-        title="⭐ Поддержка Music Flow",
-        description=f"Добровольное пожертвование {amount} Stars",
-        prices=prices,
-        provider_token="",
-        payload=f"donate_{amount}_{message.from_user.id}",
-        currency="XTR"
-    )
-    await state.clear()
-
-# ---------- ОБРАБОТКА УСПЕШНОЙ ОПЛАТЫ ----------
-@dp.message(F.successful_payment)
-async def successful_payment(message: types.Message):
-    payment = message.successful_payment
-    amount = payment.total_amount
-    user_id = str(message.from_user.id)
-    username = message.from_user.full_name
-    
-    # Сохраняем донат
-    donations = load_donations()
-    donations["total"] += amount
-    
-    if user_id not in donations["users"]:
-        donations["users"][user_id] = {"name": username, "total": 0, "count": 0}
-    
-    donations["users"][user_id]["total"] += amount
-    donations["users"][user_id]["count"] += 1
-    donations["users"][user_id]["name"] = username
-    
-    save_donations(donations)
-    
-    stars_emoji = "⭐" * min(amount, 5) + ("+" if amount > 5 else "")
-    
-    await message.answer(
-        f"🎉 *Спасибо за поддержку!*\n\n"
-        f"{stars_emoji} Ты отправил {amount} ⭐\n"
-        f"❤️ Твой вклад помогает проекту развиваться!\n\n"
-        f"📊 *Всего собрано:* {donations['total']} ⭐",
-        reply_markup=get_main_menu(),
-        parse_mode="Markdown"
-    )
-    
-    # Уведомление админу
-    if ADMIN_ID:
-        try:
-            await bot.send_message(
-                ADMIN_ID,
-                f"💎 *Новый донат!*\n\n"
-                f"👤 {username}\n"
-                f"⭐ {amount} Stars\n"
-                f"📊 Всего: {donations['total']}⭐\n"
-                f"👤 Всего донатеров: {len(donations['users'])}",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
 
 # ---------- АДМИН-КОМАНДЫ ----------
 @dp.message(Command("add"))
@@ -678,6 +563,127 @@ async def random_track(callback: types.CallbackQuery):
         reply_markup=get_main_menu()
     )
     await callback.answer()
+
+# ---------- ПОДДЕРЖКА ----------
+@dp.callback_query(F.data == "support")
+async def support_menu(callback: types.CallbackQuery):
+    donations = load_donations()
+    total = donations.get("total", 0)
+    
+    await callback.message.answer(
+        f"⭐ *Поддержка проекта*\n\n"
+        f"❤️ Спасибо, что пользуешься Music Flow!\n\n"
+        f"📊 *Всего собрано:* {total} ⭐\n\n"
+        f"💰 *Курс:* 1⭐ ≈ 1.5₽ (комиссия Telegram ~30%)\n\n"
+        f"👇 *Выбери сумму для доната:*",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⭐ 1 Star", callback_data="donate_1")],
+                [InlineKeyboardButton(text="⭐⭐ 5 Stars", callback_data="donate_5")],
+                [InlineKeyboardButton(text="⭐⭐⭐ 10 Stars", callback_data="donate_10")],
+                [InlineKeyboardButton(text="⭐ 25 Stars", callback_data="donate_25")],
+                [InlineKeyboardButton(text="⭐ 50 Stars", callback_data="donate_50")],
+                [InlineKeyboardButton(text="⭐ 100 Stars", callback_data="donate_100")],
+                [InlineKeyboardButton(text="✏️ Своя сумма", callback_data="donate_custom")],
+                [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
+            ]
+        ),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("donate_"))
+async def donate_preset(callback: types.CallbackQuery, state: FSMContext):
+    if callback.data == "donate_custom":
+        await callback.message.answer(
+            "✏️ *Напиши количество Stars (от 1 до 2500):*",
+            parse_mode="Markdown"
+        )
+        await state.set_state(AdminStates.waiting_donate_amount)
+        await callback.answer()
+        return
+    
+    amount = int(callback.data.split("_")[1])
+    
+    prices = [LabeledPrice(label="⭐ Поддержка Music Flow", amount=amount)]
+    
+    await callback.message.answer_invoice(
+        title="⭐ Поддержка Music Flow",
+        description=f"Добровольное пожертвование {amount} Stars",
+        prices=prices,
+        provider_token="",
+        payload=f"donate_{amount}_{callback.from_user.id}",
+        currency="XTR"
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_donate_amount)
+async def donate_custom_amount(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ *Введи число!*", parse_mode="Markdown")
+        return
+    
+    amount = int(message.text)
+    if amount < 1 or amount > 2500:
+        await message.answer("❌ *От 1 до 2500 звёзд*", parse_mode="Markdown")
+        return
+    
+    prices = [LabeledPrice(label="⭐ Поддержка Music Flow", amount=amount)]
+    
+    await message.answer_invoice(
+        title="⭐ Поддержка Music Flow",
+        description=f"Добровольное пожертвование {amount} Stars",
+        prices=prices,
+        provider_token="",
+        payload=f"donate_{amount}_{message.from_user.id}",
+        currency="XTR"
+    )
+    await state.clear()
+
+# ---------- ОБРАБОТКА УСПЕШНОЙ ОПЛАТЫ ----------
+@dp.message(F.successful_payment)
+async def successful_payment(message: types.Message):
+    payment = message.successful_payment
+    amount = payment.total_amount
+    user_id = str(message.from_user.id)
+    username = message.from_user.full_name
+    
+    donations = load_donations()
+    donations["total"] += amount
+    
+    if user_id not in donations["users"]:
+        donations["users"][user_id] = {"name": username, "total": 0, "count": 0}
+    
+    donations["users"][user_id]["total"] += amount
+    donations["users"][user_id]["count"] += 1
+    donations["users"][user_id]["name"] = username
+    
+    save_donations(donations)
+    
+    stars_emoji = "⭐" * min(amount, 5) + ("+" if amount > 5 else "")
+    
+    await message.answer(
+        f"🎉 *Спасибо за поддержку!*\n\n"
+        f"{stars_emoji} Ты отправил {amount} ⭐\n"
+        f"❤️ Твой вклад помогает проекту развиваться!\n\n"
+        f"📊 *Всего собрано:* {donations['total']} ⭐",
+        reply_markup=get_main_menu(),
+        parse_mode="Markdown"
+    )
+    
+    if ADMIN_ID:
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"💎 *Новый донат!*\n\n"
+                f"👤 {username}\n"
+                f"⭐ {amount} Stars\n"
+                f"📊 Всего: {donations['total']}⭐\n"
+                f"👤 Всего донатеров: {len(donations['users'])}",
+                parse_mode="Markdown"
+            )
+        except:
+            pass
 
 # ---------- АДМИН-ДОБАВЛЕНИЕ ----------
 @dp.callback_query(F.data.startswith("cat_"))
@@ -1310,7 +1316,7 @@ async def main():
     print("=" * 40)
     print("⭐ Система Telegram Stars активна!")
     print("🤖 Бот запущен!")
-    
+
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
