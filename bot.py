@@ -3,32 +3,26 @@ import logging
 import os
 import json
 import random
-import time
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputFile
+from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from datetime import datetime
 import aiohttp
-import tempfile
+import aiofiles
 
 # ---------- НАСТРОЙКИ ----------
-API_TOKEN = os.getenv('API_TOKEN', 'ТВОЙ_ТОКЕН_СЮДА')
-ADMIN_ID = int(os.getenv('ADMIN_ID', 123456789))
-STORAGE_FILE = 'music_library.json'
-USER_PLAYLISTS_FILE = 'user_playlists.json'
-MUSIC_FOLDER = 'music_files'  # Папка для хранения файлов
+API_TOKEN = os.getenv('API_TOKEN', '8973047993:AAGGJWwmcMRK9eiBOYM8sOKXPs_zuTHhh78')
+ADMIN_ID = int(os.getenv('ADMIN_ID', 7921694564))
+MUSIC_FOLDER = 'music_files'
 
-# Создаем папку для музыки если её нет
+# Создаем папку для музыки
 os.makedirs(MUSIC_FOLDER, exist_ok=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 storage = MemoryStorage()
@@ -37,9 +31,10 @@ dp = Dispatcher(storage=storage)
 
 # ---------- КАТЕГОРИИ ----------
 CATEGORIES = {
-    "classical": {"name": "Классика", "emoji": "🎻", "protected": True},
-    "lofi": {"name": "Lo-Fi Chill", "emoji": "🎧", "protected": True},
-    "nature": {"name": "Природа", "emoji": "🌿", "protected": True}
+    "classical": {"name": "Классика", "emoji": "🎻"},
+    "lofi": {"name": "Lo-Fi", "emoji": "🎧"},
+    "nature": {"name": "Природа", "emoji": "🌿"},
+    "other": {"name": "Другое", "emoji": "🎵"}
 }
 
 # ---------- FSM ----------
@@ -49,122 +44,45 @@ class AdminStates(StatesGroup):
     waiting_for_delete = State()
     waiting_for_playlist_name = State()
     waiting_for_playlist_track = State()
-    waiting_for_playlist_delete = State()
 
-# ---------- РАБОТА С БАЗОЙ ----------
-def load_library():
-    if os.path.exists(STORAGE_FILE):
+# ---------- РАБОТА С ДАННЫМИ ----------
+def load_data():
+    """Загружает данные из JSON файла"""
+    data_file = 'music_data.json'
+    if os.path.exists(data_file):
         try:
-            with open(STORAGE_FILE, 'r', encoding='utf-8') as f:
+            with open(data_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except Exception as e:
-            logger.error(f"Ошибка загрузки библиотеки: {e}")
+        except:
             return {}
     return {}
 
-def save_library(library):
-    try:
-        with open(STORAGE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(library, f, indent=2, ensure_ascii=False)
-        logger.info("Библиотека сохранена")
-    except Exception as e:
-        logger.error(f"Ошибка сохранения библиотеки: {e}")
+def save_data(data):
+    """Сохраняет данные в JSON файл"""
+    data_file = 'music_data.json'
+    with open(data_file, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
-def load_user_playlists():
-    if os.path.exists(USER_PLAYLISTS_FILE):
-        try:
-            with open(USER_PLAYLISTS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Ошибка загрузки плейлистов: {e}")
-            return {}
-    return {}
-
-def save_user_playlists(playlists):
-    try:
-        with open(USER_PLAYLISTS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(playlists, f, indent=2, ensure_ascii=False)
-        logger.info("Плейлисты сохранены")
-    except Exception as e:
-        logger.error(f"Ошибка сохранения плейлистов: {e}")
-
-def get_track_duration(seconds):
-    if not seconds:
-        return "0:00"
-    try:
-        minutes = int(seconds) // 60
-        seconds = int(seconds) % 60
-        return f"{minutes}:{seconds:02d}"
-    except:
-        return "0:00"
-
-async def download_audio_file(file_id, filename):
-    """Скачивает аудиофайл с Telegram"""
-    try:
-        file = await bot.get_file(file_id)
-        file_path = file.file_path
-        
-        # Скачиваем файл
-        url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_path}"
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    # Сохраняем файл
-                    file_path_local = os.path.join(MUSIC_FOLDER, filename)
-                    with open(file_path_local, 'wb') as f:
-                        f.write(await response.read())
-                    logger.info(f"Файл скачан: {file_path_local}")
-                    return file_path_local
-                else:
-                    logger.error(f"Ошибка скачивания: {response.status}")
-                    return None
-    except Exception as e:
-        logger.error(f"Ошибка при скачивании файла: {e}")
-        return None
-
-async def upload_audio_to_telegram(file_path):
-    """Загружает аудиофайл в Telegram и возвращает новый file_id"""
-    try:
-        with open(file_path, 'rb') as f:
-            audio_file = InputFile(f)
-            message = await bot.send_audio(
-                chat_id=ADMIN_ID,
-                audio=audio_file,
-                caption="Временная загрузка для обновления file_id"
-            )
-            # Удаляем отправленное сообщение
-            await bot.delete_message(ADMIN_ID, message.message_id)
-            
-            # Получаем новый file_id
-            new_file_id = message.audio.file_id
-            logger.info(f"Файл перезагружен, новый file_id: {new_file_id[:20]}...")
-            return new_file_id
-    except Exception as e:
-        logger.error(f"Ошибка при загрузке в Telegram: {e}")
-        return None
+def get_track_path(filename):
+    """Возвращает полный путь к файлу трека"""
+    return os.path.join(MUSIC_FOLDER, filename)
 
 # ---------- КЛАВИАТУРЫ ----------
 def get_main_menu():
     builder = InlineKeyboardBuilder()
     
+    # Кнопки категорий
     for key, cat in CATEGORIES.items():
         builder.add(InlineKeyboardButton(
             text=f"{cat['emoji']} {cat['name']}",
             callback_data=f"play_{key}"
         ))
     
-    builder.adjust(3)
+    builder.adjust(2)
     
     builder.row(
         InlineKeyboardButton(text="🎲 Случайный трек", callback_data="random"),
-        InlineKeyboardButton(text="📋 Мои плейлисты", callback_data="my_playlists"),
-        width=2
-    )
-    
-    builder.row(
-        InlineKeyboardButton(text="➕ Создать плейлист", callback_data="create_playlist"),
-        width=2
+        width=1
     )
     
     builder.row(
@@ -185,13 +103,11 @@ def get_admin_panel():
     
     builder.row(
         InlineKeyboardButton(text="📊 Список треков", callback_data="admin_list"),
-        InlineKeyboardButton(text="📈 Статистика", callback_data="admin_stats"),
-        InlineKeyboardButton(text="🔄 Обновить file_id", callback_data="admin_refresh"),
-        width=2
+        width=1
     )
     
     builder.row(
-        InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu"),
+        InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu"),
         width=1
     )
     
@@ -206,78 +122,9 @@ def get_category_buttons():
             callback_data=f"cat_{key}"
         ))
     
-    builder.adjust(3)
+    builder.adjust(2)
     builder.row(
         InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"),
-        width=1
-    )
-    
-    return builder.as_markup()
-
-def get_playlist_menu(user_id):
-    playlists = load_user_playlists()
-    user_playlists = playlists.get(str(user_id), {})
-    
-    builder = InlineKeyboardBuilder()
-    
-    if user_playlists:
-        for name, tracks in user_playlists.items():
-            count = len(tracks)
-            builder.add(InlineKeyboardButton(
-                text=f"📁 {name} ({count})",
-                callback_data=f"open_playlist_{name}"
-            ))
-        builder.adjust(2)
-    
-    builder.row(
-        InlineKeyboardButton(text="➕ Создать новый", callback_data="create_playlist"),
-        width=1
-    )
-    
-    builder.row(
-        InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu"),
-        width=1
-    )
-    
-    return builder.as_markup()
-
-def get_playlist_tracks_buttons(playlist_name, user_id, tracks):
-    builder = InlineKeyboardBuilder()
-    
-    for i, track in enumerate(tracks[:20], 1):
-        title = track.get('title', 'Без названия')[:30]
-        callback_data = f"playlist_track_{playlist_name}|||{i-1}"
-        builder.add(InlineKeyboardButton(
-            text=f"▶️ {i}. {title}",
-            callback_data=callback_data
-        ))
-    
-    if len(tracks) > 20:
-        builder.add(InlineKeyboardButton(
-            text=f"... и еще {len(tracks) - 20} треков",
-            callback_data="noop"
-        ))
-    
-    builder.adjust(1)
-    
-    builder.row(
-        InlineKeyboardButton(text="➕ Добавить трек", callback_data=f"add_to_playlist_{playlist_name}"),
-        width=1
-    )
-    
-    builder.row(
-        InlineKeyboardButton(text="🗑 Удалить трек", callback_data=f"delete_from_playlist_{playlist_name}"),
-        InlineKeyboardButton(text="🔀 Случайный", callback_data=f"random_playlist_{playlist_name}"),
-        width=2
-    )
-    
-    builder.row(
-        InlineKeyboardButton(text="❌ Удалить плейлист", callback_data=f"remove_playlist_{playlist_name}"),
-        width=1
-    )
-    
-    builder.row(
-        InlineKeyboardButton(text="🔙 Назад к плейлистам", callback_data="my_playlists"),
         width=1
     )
     
@@ -289,10 +136,10 @@ def get_admin_delete_buttons():
     for key, cat in CATEGORIES.items():
         builder.add(InlineKeyboardButton(
             text=f"{cat['emoji']} {cat['name']}",
-            callback_data=f"cat_delete_{key}"
+            callback_data=f"delcat_{key}"
         ))
     
-    builder.adjust(3)
+    builder.adjust(2)
     builder.row(
         InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"),
         width=1
@@ -300,194 +147,86 @@ def get_admin_delete_buttons():
     
     return builder.as_markup()
 
-# ---------- ОБРАБОТКА ТЕКСТА ----------
-@dp.message()
-async def handle_text_message(message: types.Message):
-    help_text = (
-        "🎵 *Music Flow - Помощь*\n\n"
-        "📌 *Основные команды:*\n"
-        "• `/start` - Запустить бота\n"
-        "• `/menu` - Показать главное меню\n"
-        "• `/random` - Случайный трек\n\n"
-        "📋 *Плейлисты:*\n"
-        "• Нажми 'Мои плейлисты' в меню\n"
-        "• Создавай свои плейлисты\n"
-        "• Добавляй любимые треки\n\n"
-        "🎵 *Категории:*\n"
-        "• 🎻 Классика\n"
-        "• 🎧 Lo-Fi Chill\n"
-        "• 🌿 Природа\n\n"
-        "👑 *Админ-команды:*\n"
-        "• `/add` - Добавить трек\n"
-        "• `/delete` - Удалить трек\n"
-        "• `/list` - Список треков"
-    )
-    
-    await message.answer(
-        help_text,
-        parse_mode="Markdown",
-        reply_markup=get_main_menu()
-    )
-
 # ---------- КОМАНДЫ ----------
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    welcome_text = (
-        "🎵 *Добро пожаловать в Music Flow*\n\n"
-        "✨ Твой персональный музыкальный бот\n\n"
-        "📌 *Основные категории:*\n"
+    welcome = (
+        "🎵 *Музыкальный бот*\n\n"
+        "📌 *Категории:*\n"
         "• 🎻 Классика\n"
-        "• 🎧 Lo-Fi Chill\n"
-        "• 🌿 Природа\n\n"
-        "📋 Создавай свои плейлисты\n"
-        "⚡ Мгновенная загрузка\n"
+        "• 🎧 Lo-Fi\n"
+        "• 🌿 Природа\n"
+        "• 🎵 Другое\n\n"
+        "🎲 Случайный трек\n"
+        "⚙️ Управление (только админ)"
     )
     
-    await message.answer(
-        welcome_text,
-        reply_markup=get_main_menu(),
-        parse_mode="Markdown"
-    )
+    await message.answer(welcome, reply_markup=get_main_menu(), parse_mode="Markdown")
     
     if message.from_user.id == ADMIN_ID:
-        await message.answer(
-            "👑 *Режим администратора активен*",
-            parse_mode="Markdown"
-        )
+        await message.answer("👑 *Режим администратора*", parse_mode="Markdown")
 
 @dp.message(Command("menu"))
 async def cmd_menu(message: types.Message):
-    await message.answer(
-        "📋 *Главное меню*",
-        reply_markup=get_main_menu(),
-        parse_mode="Markdown"
-    )
+    await message.answer("📋 *Главное меню*", reply_markup=get_main_menu(), parse_mode="Markdown")
 
 @dp.message(Command("random"))
 async def cmd_random(message: types.Message):
-    library = load_library()
+    data = load_data()
     all_tracks = []
     
-    for category, tracks in library.items():
-        for track_id, track_data in tracks.items():
-            all_tracks.append((category, track_id, track_data))
+    for category, tracks in data.items():
+        if category in CATEGORIES:
+            for track_id, track in tracks.items():
+                all_tracks.append((category, track_id, track))
     
     if not all_tracks:
-        await message.answer(
-            "🎵 *Библиотека пуста*\n\n"
-            "Добавьте первые треки через админ-панель!",
-            parse_mode="Markdown"
-        )
+        await message.answer("❌ *Нет треков в библиотеке*", parse_mode="Markdown")
         return
     
-    category, track_id, track_data = random.choice(all_tracks)
+    category, track_id, track = random.choice(all_tracks)
     
-    # Пробуем воспроизвести с обновлением file_id если нужно
-    await play_track(message, track_data, category, is_callback=False)
-
-async def play_track(target, track_data, category=None, is_callback=True):
-    """Универсальная функция для воспроизведения трека"""
-    file_id = track_data.get('file_id')
-    title = track_data.get('title', 'Без названия')
+    # Путь к файлу
+    file_path = get_track_path(track['filename'])
     
-    # Пробуем использовать сохраненный file_id
+    if not os.path.exists(file_path):
+        await message.answer("❌ *Файл не найден*", parse_mode="Markdown")
+        return
+    
     try:
-        if is_callback:
-            await target.message.answer_audio(
-                file_id,
-                caption=(
-                    f"🎵 *{title}*\n"
-                    f"📁 *Категория:* {CATEGORIES[category]['name'] if category else 'Неизвестно'}\n"
-                    f"⏱ *Длительность:* {get_track_duration(track_data.get('duration', 0))}"
-                ),
-                parse_mode="Markdown"
-            )
-        else:
-            await target.answer_audio(
-                file_id,
-                caption=(
-                    f"🎲 *Случайный трек*\n\n"
-                    f"🎵 *Название:* {title}\n"
-                    f"📁 *Категория:* {CATEGORIES[category]['name'] if category else 'Неизвестно'}\n"
-                    f"⏱ *Длительность:* {get_track_duration(track_data.get('duration', 0))}"
-                ),
-                parse_mode="Markdown",
-                reply_markup=get_main_menu()
-            )
-        return True
+        audio_file = FSInputFile(file_path)
+        await message.answer_audio(
+            audio_file,
+            caption=(
+                f"🎲 *Случайный трек*\n\n"
+                f"🎵 {track.get('title', 'Без названия')}\n"
+                f"📁 {CATEGORIES[category]['emoji']} {CATEGORIES[category]['name']}"
+            ),
+            parse_mode="Markdown",
+            reply_markup=get_main_menu()
+        )
     except Exception as e:
-        logger.error(f"Ошибка воспроизведения с file_id: {e}")
-        
-        # Если file_id не работает, пробуем восстановить из локального файла
-        if 'local_path' in track_data and os.path.exists(track_data['local_path']):
-            try:
-                # Загружаем файл заново в Telegram
-                new_file_id = await upload_audio_to_telegram(track_data['local_path'])
-                if new_file_id:
-                    # Обновляем file_id в библиотеке
-                    library = load_library()
-                    if category and category in library:
-                        for tid, tdata in library[category].items():
-                            if tdata.get('title') == title:
-                                tdata['file_id'] = new_file_id
-                                save_library(library)
-                                break
-                    
-                    # Пробуем воспроизвести с новым file_id
-                    if is_callback:
-                        await target.message.answer_audio(
-                            new_file_id,
-                            caption=(
-                                f"🎵 *{title}*\n"
-                                f"📁 *Категория:* {CATEGORIES[category]['name'] if category else 'Неизвестно'}\n"
-                                f"⏱ *Длительность:* {get_track_duration(track_data.get('duration', 0))}\n\n"
-                                f"🔄 *file_id обновлен!*"
-                            ),
-                            parse_mode="Markdown"
-                        )
-                    else:
-                        await target.answer_audio(
-                            new_file_id,
-                            caption=(
-                                f"🎲 *Случайный трек*\n\n"
-                                f"🎵 *Название:* {title}\n"
-                                f"📁 *Категория:* {CATEGORIES[category]['name'] if category else 'Неизвестно'}\n"
-                                f"⏱ *Длительность:* {get_track_duration(track_data.get('duration', 0))}\n\n"
-                                f"🔄 *file_id обновлен!*"
-                            ),
-                            parse_mode="Markdown",
-                            reply_markup=get_main_menu()
-                        )
-                    return True
-            except Exception as e2:
-                logger.error(f"Ошибка восстановления file_id: {e2}")
-        
-        # Если ничего не помогло
-        error_msg = f"❌ *Ошибка при воспроизведении*\n\nТрек: {title}\nОшибка: {str(e)[:100]}"
-        if is_callback:
-            await target.answer(error_msg, show_alert=True)
-        else:
-            await target.answer(error_msg, parse_mode="Markdown")
-        return False
+        logger.error(f"Ошибка: {e}")
+        await message.answer(f"❌ *Ошибка:* {str(e)}", parse_mode="Markdown")
 
-# ---------- АДМИН-КОМАНДЫ ----------
+# ---------- АДМИН КОМАНДЫ ----------
 @dp.message(Command("add"))
-async def admin_add_start(message: types.Message):
+async def admin_add(message: types.Message):
     if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Доступ запрещен!")
+        await message.answer("⛔ *Доступ запрещен*", parse_mode="Markdown")
         return
     
     await message.answer(
-        "📥 *Добавление нового трека*\n\n"
+        "📥 *Добавление трека*\n\n"
         "Выбери категорию:",
         reply_markup=get_category_buttons(),
         parse_mode="Markdown"
     )
 
 @dp.message(Command("delete"))
-async def admin_delete_start(message: types.Message):
+async def admin_delete(message: types.Message):
     if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Доступ запрещен!")
+        await message.answer("⛔ *Доступ запрещен*", parse_mode="Markdown")
         return
     
     await message.answer(
@@ -500,31 +239,30 @@ async def admin_delete_start(message: types.Message):
 @dp.message(Command("list"))
 async def admin_list(message: types.Message):
     if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Доступ запрещен!")
+        await message.answer("⛔ *Доступ запрещен*", parse_mode="Markdown")
         return
     
-    library = load_library()
-    if not library:
+    data = load_data()
+    if not data:
         await message.answer("📊 *Библиотека пуста*", parse_mode="Markdown")
         return
     
-    text = "📊 *Список всех треков*\n\n"
+    text = "📊 *Список треков*\n\n"
     total = 0
     
-    for category, tracks in library.items():
-        cat_name = CATEGORIES.get(category, {}).get('name', category)
-        cat_emoji = CATEGORIES.get(category, {}).get('emoji', '🎵')
-        text += f"📁 *{cat_emoji} {cat_name}* ({len(tracks)} треков)\n"
-        
-        for track_id, track_data in tracks.items():
-            duration = get_track_duration(track_data.get('duration', 0))
-            has_local = "📁" if track_data.get('local_path') and os.path.exists(track_data.get('local_path', '')) else "☁️"
-            text += f"  • {has_local} `{track_id}` — {track_data.get('title', 'Без названия')} [{duration}]\n"
-        
-        text += "\n"
-        total += len(tracks)
+    for category, tracks in data.items():
+        if category in CATEGORIES:
+            cat_name = CATEGORIES[category]['name']
+            cat_emoji = CATEGORIES[category]['emoji']
+            text += f"📁 *{cat_emoji} {cat_name}* ({len(tracks)} треков)\n"
+            
+            for track_id, track in tracks.items():
+                text += f"  • {track.get('title', 'Без названия')}\n"
+            
+            text += "\n"
+            total += len(tracks)
     
-    text += f"\n📌 *Всего треков:* {total}"
+    text += f"📌 *Всего:* {total}"
     
     if len(text) > 4000:
         parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
@@ -533,107 +271,102 @@ async def admin_list(message: types.Message):
     else:
         await message.answer(text, parse_mode="Markdown")
 
-@dp.message(Command("refresh"))
-async def refresh_all_files(message: types.Message):
-    """Команда для обновления всех file_id"""
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Доступ запрещен!")
-        return
-    
-    await message.answer("🔄 *Начинаю обновление file_id...*", parse_mode="Markdown")
-    
-    library = load_library()
-    updated = 0
-    failed = 0
-    
-    for category, tracks in library.items():
-        for track_id, track_data in tracks.items():
-            if 'local_path' in track_data and os.path.exists(track_data['local_path']):
-                try:
-                    new_file_id = await upload_audio_to_telegram(track_data['local_path'])
-                    if new_file_id:
-                        track_data['file_id'] = new_file_id
-                        updated += 1
-                        await asyncio.sleep(1)  # Задержка чтобы не превысить лимиты
-                    else:
-                        failed += 1
-                except Exception as e:
-                    logger.error(f"Ошибка обновления {track_id}: {e}")
-                    failed += 1
-    
-    save_library(library)
-    
-    await message.answer(
-        f"✅ *Обновление завершено!*\n\n"
-        f"🔄 Обновлено: {updated}\n"
-        f"❌ Ошибок: {failed}",
-        parse_mode="Markdown"
+# ---------- ОБРАБОТКА ТЕКСТА ----------
+@dp.message()
+async def handle_text(message: types.Message):
+    help_text = (
+        "🎵 *Команды бота*\n\n"
+        "📌 /start - Главное меню\n"
+        "📌 /menu - Показать меню\n"
+        "📌 /random - Случайный трек\n"
+        "📌 /add - Добавить трек (админ)\n"
+        "📌 /delete - Удалить трек (админ)\n"
+        "📌 /list - Список треков (админ)"
     )
+    await message.answer(help_text, parse_mode="Markdown", reply_markup=get_main_menu())
 
-# ---------- CALLBACK-ЗАПРОСЫ ----------
-@dp.callback_query(F.data.startswith("playlist_track_"))
-async def play_playlist_track(callback: types.CallbackQuery):
-    data_parts = callback.data.replace("playlist_track_", "").split("|||")
-    
-    if len(data_parts) != 2:
-        await callback.answer("❌ Ошибка!")
-        return
-    
-    playlist_name = data_parts[0]
-    try:
-        track_index = int(data_parts[1])
-    except ValueError:
-        await callback.answer("❌ Ошибка!")
-        return
-    
-    user_id = str(callback.from_user.id)
-    playlists = load_user_playlists()
-    
-    if user_id not in playlists or playlist_name not in playlists[user_id]:
-        await callback.answer("❌ Плейлист не найден!")
-        return
-    
-    tracks = playlists[user_id][playlist_name]
-    
-    if track_index < 0 or track_index >= len(tracks):
-        await callback.answer("❌ Трек не найден!")
-        return
-    
-    track_data = tracks[track_index]
-    await play_track(callback, track_data, is_callback=True)
-
+# ---------- CALLBACK ЗАПРОСЫ ----------
 @dp.callback_query(F.data.startswith("play_"))
-async def play_category_track(callback: types.CallbackQuery):
+async def play_category(callback: types.CallbackQuery):
     category = callback.data.split("_")[1]
     
-    if category in ["playlist", "playlist_track"]:
+    if category == "list" or category == "track":
         return
     
-    library = load_library()
+    data = load_data()
     
-    if category not in library or not library[category]:
-        await callback.answer("❌ В этой категории пока нет треков!")
+    if category not in data or not data[category]:
+        await callback.answer("❌ В этой категории нет треков!")
         return
     
-    track_id = random.choice(list(library[category].keys()))
-    track_data = library[category][track_id]
-    await play_track(callback, track_data, category)
+    # Выбираем случайный трек из категории
+    track_id = random.choice(list(data[category].keys()))
+    track = data[category][track_id]
+    
+    file_path = get_track_path(track['filename'])
+    
+    if not os.path.exists(file_path):
+        await callback.answer("❌ Файл не найден!")
+        return
+    
+    try:
+        audio_file = FSInputFile(file_path)
+        await callback.message.answer_audio(
+            audio_file,
+            caption=(
+                f"🎵 *{track.get('title', 'Без названия')}*\n"
+                f"📁 {CATEGORIES[category]['emoji']} {CATEGORIES[category]['name']}"
+            ),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="🎲 Другой трек", callback_data=f"play_{category}")],
+                    [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
+                ]
+            )
+        )
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await callback.answer(f"❌ Ошибка: {str(e)[:50]}")
 
 @dp.callback_query(F.data == "random")
 async def random_track(callback: types.CallbackQuery):
-    library = load_library()
+    data = load_data()
     all_tracks = []
     
-    for category, tracks in library.items():
-        for track_id, track_data in tracks.items():
-            all_tracks.append((category, track_id, track_data))
+    for category, tracks in data.items():
+        if category in CATEGORIES:
+            for track_id, track in tracks.items():
+                all_tracks.append((category, track_id, track))
     
     if not all_tracks:
-        await callback.answer("❌ Нет треков в библиотеке!")
+        await callback.answer("❌ Нет треков!")
         return
     
-    category, track_id, track_data = random.choice(all_tracks)
-    await play_track(callback, track_data, category)
+    category, track_id, track = random.choice(all_tracks)
+    file_path = get_track_path(track['filename'])
+    
+    if not os.path.exists(file_path):
+        await callback.answer("❌ Файл не найден!")
+        return
+    
+    try:
+        audio_file = FSInputFile(file_path)
+        await callback.message.answer_audio(
+            audio_file,
+            caption=(
+                f"🎲 *Случайный трек*\n\n"
+                f"🎵 {track.get('title', 'Без названия')}\n"
+                f"📁 {CATEGORIES[category]['emoji']} {CATEGORIES[category]['name']}"
+            ),
+            parse_mode="Markdown",
+            reply_markup=get_main_menu()
+        )
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await callback.answer(f"❌ Ошибка: {str(e)[:50]}")
 
 # ---------- АДМИН-ДОБАВЛЕНИЕ ----------
 @dp.callback_query(F.data.startswith("cat_"))
@@ -642,7 +375,7 @@ async def admin_choose_category(callback: types.CallbackQuery, state: FSMContext
         await callback.answer("⛔ Доступ запрещен!")
         return
     
-    if callback.data.startswith("cat_delete_"):
+    if callback.data.startswith("delcat_"):
         return
     
     category = callback.data.split("_")[1]
@@ -650,13 +383,11 @@ async def admin_choose_category(callback: types.CallbackQuery, state: FSMContext
     await state.set_state(AdminStates.waiting_for_file)
     
     await callback.message.answer(
-        f"📤 *Отправь аудиофайл*\n\n"
+        f"📤 *Отправь MP3 файл*\n\n"
         f"📁 Категория: {CATEGORIES[category]['emoji']} {CATEGORIES[category]['name']}\n\n"
-        f"⚡ *Быстрое добавление:*\n"
-        f"• Файл сохраняется локально\n"
-        f"• file_id обновляется автоматически\n"
-        f"• Мгновенное воспроизведение\n\n"
-        f"💡 В подписи к файлу укажи название трека",
+        f"💡 В подписи к файлу укажи название трека\n"
+        f"📝 Пример: 'Мой любимый трек'\n\n"
+        f"⚠️ Файл будет сохранен на сервере",
         parse_mode="Markdown"
     )
     await callback.answer()
@@ -676,238 +407,151 @@ async def admin_receive_audio(message: types.Message, state: FSMContext):
         return
     
     audio = message.audio
-    title = message.caption or audio.file_name or audio.title or "Без названия"
     
-    # Сохраняем file_id и локально
-    file_id = audio.file_id
-    
-    # Генерируем уникальное имя файла
-    timestamp = int(time.time())
-    safe_title = ''.join(c for c in title if c.isalnum() or c in ' ._-')[:50]
-    filename = f"{timestamp}_{safe_title}.mp3"
+    # Получаем название из подписи или имени файла
+    title = message.caption or audio.file_name or "Без названия"
     
     # Скачиваем файл
-    local_path = await download_audio_file(file_id, filename)
-    
-    library = load_library()
-    if category not in library:
-        library[category] = {}
-    
-    track_id = str(timestamp)
-    
-    track_data = {
-        "file_id": file_id,
-        "title": title,
-        "duration": audio.duration,
-        "added_by": message.from_user.id,
-        "added_by_name": message.from_user.full_name,
-        "added_date": datetime.now().isoformat(),
-        "file_name": audio.file_name,
-        "mime_type": audio.mime_type,
-        "file_size": audio.file_size,
-        "local_path": local_path  # Сохраняем путь к локальному файлу
-    }
-    
-    library[category][track_id] = track_data
-    save_library(library)
-    
-    duration = get_track_duration(audio.duration)
-    await message.answer(
-        f"✅ *Трек успешно добавлен!*\n\n"
-        f"📁 *Категория:* {CATEGORIES[category]['emoji']} {CATEGORIES[category]['name']}\n"
-        f"🎵 *Название:* {title}\n"
-        f"⏱ *Длительность:* {duration}\n"
-        f"📁 *Локально:* {'Да' if local_path else 'Нет'}\n"
-        f"👤 *Добавил:* {message.from_user.full_name}\n\n"
-        f"⚡ *Трек загружается мгновенно!*\n"
-        f"🔑 *ID трека:* `{track_id}`",
-        parse_mode="Markdown",
-        reply_markup=get_main_menu()
-    )
-    await state.clear()
+    try:
+        file = await bot.get_file(audio.file_id)
+        file_path = file.file_path
+        
+        # Генерируем имя файла
+        timestamp = int(datetime.now().timestamp())
+        safe_title = ''.join(c for c in title if c.isalnum() or c in ' ._-')[:50]
+        filename = f"{timestamp}_{safe_title}.mp3"
+        local_path = get_track_path(filename)
+        
+        # Скачиваем файл
+        url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_path}"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    async with aiofiles.open(local_path, 'wb') as f:
+                        await f.write(await response.read())
+                else:
+                    await message.answer("❌ Ошибка скачивания файла!")
+                    return
+        
+        # Сохраняем в JSON
+        music_data = load_data()
+        if category not in music_data:
+            music_data[category] = {}
+        
+        track_id = str(timestamp)
+        music_data[category][track_id] = {
+            "title": title,
+            "filename": filename,
+            "duration": audio.duration,
+            "added_date": datetime.now().isoformat()
+        }
+        
+        save_data(music_data)
+        
+        await message.answer(
+            f"✅ *Трек добавлен!*\n\n"
+            f"📁 Категория: {CATEGORIES[category]['emoji']} {CATEGORIES[category]['name']}\n"
+            f"🎵 Название: {title}\n"
+            f"⏱ Длительность: {audio.duration//60}:{audio.duration%60:02d}",
+            parse_mode="Markdown",
+            reply_markup=get_main_menu()
+        )
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await message.answer(f"❌ *Ошибка:* {str(e)}", parse_mode="Markdown")
+        await state.clear()
 
 @dp.message(AdminStates.waiting_for_file)
 async def admin_wrong_file(message: types.Message):
     if message.from_user.id == ADMIN_ID:
-        await message.answer(
-            "❌ *Неверный формат*\n\n"
-            "Отправь именно аудиофайл (MP3, OGG, M4A и т.д.).",
-            parse_mode="Markdown"
-        )
+        await message.answer("❌ *Отправь именно аудиофайл*", parse_mode="Markdown")
 
-# ---------- ПЛЕЙЛИСТЫ ПОЛЬЗОВАТЕЛЕЙ ----------
-@dp.callback_query(F.data == "my_playlists")
-async def show_my_playlists(callback: types.CallbackQuery):
-    user_id = str(callback.from_user.id)
-    playlists = load_user_playlists()
-    
-    if user_id not in playlists or not playlists[user_id]:
-        await callback.message.answer(
-            "📋 *У тебя пока нет плейлистов*\n\n"
-            "Создай свой первый плейлист!",
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="➕ Создать плейлист", callback_data="create_playlist")],
-                    [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
-                ]
-            ),
-            parse_mode="Markdown"
-        )
-    else:
-        await callback.message.answer(
-            "📋 *Твои плейлисты*",
-            reply_markup=get_playlist_menu(callback.from_user.id),
-            parse_mode="Markdown"
-        )
-    
-    await callback.answer()
-
-@dp.callback_query(F.data == "create_playlist")
-async def create_playlist_start(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer(
-        "📝 *Создание нового плейлиста*\n\n"
-        "Напиши название для нового плейлиста:",
-        parse_mode="Markdown"
-    )
-    await state.set_state(AdminStates.waiting_for_playlist_name)
-    await callback.answer()
-
-@dp.message(AdminStates.waiting_for_playlist_name)
-async def create_playlist_name(message: types.Message, state: FSMContext):
-    playlist_name = message.text.strip()
-    
-    if len(playlist_name) > 30:
-        await message.answer("❌ Название слишком длинное (максимум 30 символов)")
+# ---------- АДМИН-УДАЛЕНИЕ ----------
+@dp.callback_query(F.data.startswith("delcat_"))
+async def admin_delete_category(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ Доступ запрещен!")
         return
     
-    user_id = str(message.from_user.id)
-    playlists = load_user_playlists()
+    category = callback.data.split("_")[1]
+    await state.update_data(category=category)
+    await state.set_state(AdminStates.waiting_for_delete)
     
-    if user_id not in playlists:
-        playlists[user_id] = {}
+    data = load_data()
     
-    if playlist_name in playlists[user_id]:
-        await message.answer("❌ Плейлист с таким названием уже существует!")
+    if category not in data or not data[category]:
+        await callback.answer("❌ В этой категории нет треков!")
         return
     
-    playlists[user_id][playlist_name] = []
-    save_user_playlists(playlists)
+    text = f"🗑 *Удаление трека из {CATEGORIES[category]['emoji']} {CATEGORIES[category]['name']}*\n\n"
+    text += "Отправь номер трека:\n\n"
     
-    await message.answer(
-        f"✅ *Плейлист создан!*\n\n"
-        f"📁 Название: {playlist_name}\n\n"
-        f"Теперь ты можешь добавлять в него треки.",
-        reply_markup=get_playlist_menu(message.from_user.id),
-        parse_mode="Markdown"
-    )
-    await state.clear()
+    i = 1
+    for track_id, track in data[category].items():
+        text += f"{i}. {track.get('title', 'Без названия')}\n"
+        i += 1
+    
+    await callback.message.answer(text, parse_mode="Markdown")
+    await callback.answer()
 
-@dp.callback_query(F.data.startswith("open_playlist_"))
-async def open_playlist(callback: types.CallbackQuery):
-    playlist_name = callback.data.replace("open_playlist_", "")
-    user_id = str(callback.from_user.id)
-    
-    playlists = load_user_playlists()
-    
-    if user_id not in playlists or playlist_name not in playlists[user_id]:
-        await callback.answer("❌ Плейлист не найден!")
+@dp.message(AdminStates.waiting_for_delete)
+async def admin_delete_track(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ Доступ запрещен!")
         return
     
-    tracks = playlists[user_id][playlist_name]
-    
-    if not tracks:
-        text = f"📁 *{playlist_name}*\n\n"
-        text += "В плейлисте пока нет треков.\n"
-        text += "Нажми 'Добавить трек', чтобы добавить музыку."
-    else:
-        text = f"📁 *{playlist_name}* ({len(tracks)} треков)\n\n"
-        text += "▶️ Нажми на трек, чтобы прослушать"
-    
-    await callback.message.answer(
-        text,
-        reply_markup=get_playlist_tracks_buttons(playlist_name, callback.from_user.id, tracks),
-        parse_mode="Markdown"
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("add_to_playlist_"))
-async def add_to_playlist(callback: types.CallbackQuery, state: FSMContext):
-    playlist_name = callback.data.replace("add_to_playlist_", "")
-    await state.update_data(playlist_name=playlist_name)
-    
-    await callback.message.answer(
-        f"🎵 *Добавление трека в плейлист*\n\n"
-        f"📁 Плейлист: {playlist_name}\n\n"
-        "Отправь аудиофайл, который хочешь добавить.\n"
-        "В подписи к файлу укажи название трека.\n\n"
-        "⚡ *Файл сохраняется локально и в Telegram!*",
-        parse_mode="Markdown"
-    )
-    await state.set_state(AdminStates.waiting_for_playlist_track)
-    await callback.answer()
-
-@dp.message(AdminStates.waiting_for_playlist_track, F.audio)
-async def add_track_to_playlist(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    playlist_name = data.get('playlist_name')
+    category = data.get('category')
     
-    if not playlist_name:
+    if not category:
         await message.answer("❌ Ошибка! Попробуй снова.")
         await state.clear()
         return
     
-    user_id = str(message.from_user.id)
-    playlists = load_user_playlists()
-    
-    if user_id not in playlists or playlist_name not in playlists[user_id]:
-        await message.answer("❌ Плейлист не найден!")
+    try:
+        track_num = int(message.text.strip()) - 1
+        music_data = load_data()
+        
+        if category not in music_data:
+            await message.answer("❌ Категория не найдена!")
+            return
+        
+        tracks = list(music_data[category].items())
+        
+        if track_num < 0 or track_num >= len(tracks):
+            await message.answer("❌ Неверный номер!")
+            return
+        
+        track_id, track = tracks[track_num]
+        
+        # Удаляем файл
+        file_path = get_track_path(track['filename'])
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        
+        # Удаляем из JSON
+        del music_data[category][track_id]
+        if not music_data[category]:
+            del music_data[category]
+        
+        save_data(music_data)
+        
+        await message.answer(
+            f"✅ *Трек удален!*\n\n"
+            f"🎵 {track.get('title', 'Без названия')}",
+            parse_mode="Markdown",
+            reply_markup=get_main_menu()
+        )
         await state.clear()
-        return
-    
-    audio = message.audio
-    title = message.caption or audio.file_name or audio.title or "Без названия"
-    file_id = audio.file_id
-    
-    # Скачиваем файл для резервного копирования
-    timestamp = int(time.time())
-    safe_title = ''.join(c for c in title if c.isalnum() or c in ' ._-')[:50]
-    filename = f"playlist_{timestamp}_{safe_title}.mp3"
-    local_path = await download_audio_file(file_id, filename)
-    
-    track_data = {
-        "file_id": file_id,
-        "title": title,
-        "duration": audio.duration,
-        "added_by": message.from_user.id,
-        "added_by_name": message.from_user.full_name,
-        "added_date": datetime.now().isoformat(),
-        "local_path": local_path
-    }
-    
-    playlists[user_id][playlist_name].append(track_data)
-    save_user_playlists(playlists)
-    
-    duration = get_track_duration(audio.duration)
-    tracks = playlists[user_id][playlist_name]
-    
-    await message.answer(
-        f"✅ *Трек добавлен в плейлист!*\n\n"
-        f"📁 Плейлист: {playlist_name}\n"
-        f"🎵 Название: {title}\n"
-        f"⏱ Длительность: {duration}\n\n"
-        f"⚡ *Трек загружается мгновенно!*",
-        parse_mode="Markdown"
-    )
-    
-    text = f"📁 *{playlist_name}* ({len(tracks)} треков)\n\n"
-    text += "▶️ Нажми на трек, чтобы прослушать"
-    
-    await message.answer(
-        text,
-        reply_markup=get_playlist_tracks_buttons(playlist_name, message.from_user.id, tracks),
-        parse_mode="Markdown"
-    )
-    await state.clear()
+        
+    except ValueError:
+        await message.answer("❌ Отправь номер (число)!")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+        await state.clear()
 
 # ---------- АДМИН-ПАНЕЛЬ ----------
 @dp.callback_query(F.data == "admin_panel")
@@ -931,8 +575,7 @@ async def admin_add_callback(callback: types.CallbackQuery):
         return
     
     await callback.message.answer(
-        "📥 *Добавление трека*\n\n"
-        "Выбери категорию для нового трека:",
+        "📥 *Выбери категорию*",
         reply_markup=get_category_buttons(),
         parse_mode="Markdown"
     )
@@ -945,84 +588,11 @@ async def admin_delete_callback(callback: types.CallbackQuery):
         return
     
     await callback.message.answer(
-        "🗑 *Удаление трека из основных категорий*\n\n"
-        "Выбери категорию:",
+        "🗑 *Выбери категорию*",
         reply_markup=get_admin_delete_buttons(),
         parse_mode="Markdown"
     )
     await callback.answer()
-
-@dp.callback_query(F.data.startswith("cat_delete_"))
-async def admin_delete_category(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("⛔ Доступ запрещен!")
-        return
-    
-    category = callback.data.replace("cat_delete_", "")
-    await state.update_data(category=category)
-    await state.set_state(AdminStates.waiting_for_delete)
-    
-    library = load_library()
-    
-    if category not in library or not library[category]:
-        await callback.answer("❌ В этой категории нет треков!")
-        return
-    
-    text = f"🗑 *Удаление трека из {CATEGORIES[category]['emoji']} {CATEGORIES[category]['name']}*\n\n"
-    text += "Отправь ID трека для удаления:\n\n"
-    
-    for track_id, track_data in library[category].items():
-        duration = get_track_duration(track_data.get('duration', 0))
-        text += f"• `{track_id}` — {track_data.get('title', 'Без названия')} [{duration}]\n"
-    
-    await callback.message.answer(text, parse_mode="Markdown")
-    await callback.answer()
-
-@dp.message(AdminStates.waiting_for_delete)
-async def admin_delete_track(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Доступ запрещен!")
-        return
-    
-    data = await state.get_data()
-    category = data.get('category')
-    
-    if not category:
-        await message.answer("❌ Ошибка! Попробуй снова.")
-        await state.clear()
-        return
-    
-    track_id = message.text.strip()
-    library = load_library()
-    
-    if category not in library or track_id not in library[category]:
-        await message.answer(
-            f"❌ *Трек не найден*\n\n"
-            f"Проверь ID и попробуй снова.",
-            parse_mode="Markdown"
-        )
-        return
-    
-    # Удаляем локальный файл если он есть
-    track_data = library[category][track_id]
-    if 'local_path' in track_data and os.path.exists(track_data['local_path']):
-        try:
-            os.remove(track_data['local_path'])
-        except:
-            pass
-    
-    del library[category][track_id]
-    if not library[category]:
-        del library[category]
-    
-    save_library(library)
-    
-    await message.answer(
-        f"✅ *Трек удален!*",
-        parse_mode="Markdown",
-        reply_markup=get_main_menu()
-    )
-    await state.clear()
 
 @dp.callback_query(F.data == "admin_list")
 async def admin_list_callback(callback: types.CallbackQuery):
@@ -1030,29 +600,28 @@ async def admin_list_callback(callback: types.CallbackQuery):
         await callback.answer("⛔ Доступ запрещен!")
         return
     
-    library = load_library()
-    if not library:
+    data = load_data()
+    if not data:
         await callback.message.answer("📊 *Библиотека пуста*", parse_mode="Markdown")
         await callback.answer()
         return
     
-    text = "📊 *Список всех треков в основных категориях*\n\n"
+    text = "📊 *Список треков*\n\n"
     total = 0
     
-    for category, tracks in library.items():
-        cat_name = CATEGORIES.get(category, {}).get('name', category)
-        cat_emoji = CATEGORIES.get(category, {}).get('emoji', '🎵')
-        text += f"📁 *{cat_emoji} {cat_name}* ({len(tracks)} треков)\n"
-        
-        for track_id, track_data in tracks.items():
-            duration = get_track_duration(track_data.get('duration', 0))
-            has_local = "📁" if track_data.get('local_path') and os.path.exists(track_data.get('local_path', '')) else "☁️"
-            text += f"  • {has_local} `{track_id}` — {track_data.get('title', 'Без названия')} [{duration}]\n"
-        
-        text += "\n"
-        total += len(tracks)
+    for category, tracks in data.items():
+        if category in CATEGORIES:
+            cat_name = CATEGORIES[category]['name']
+            cat_emoji = CATEGORIES[category]['emoji']
+            text += f"📁 *{cat_emoji} {cat_name}* ({len(tracks)} треков)\n"
+            
+            for track_id, track in tracks.items():
+                text += f"  • {track.get('title', 'Без названия')}\n"
+            
+            text += "\n"
+            total += len(tracks)
     
-    text += f"\n📌 *Всего треков:* {total}"
+    text += f"📌 *Всего:* {total}"
     
     if len(text) > 4000:
         parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
@@ -1061,72 +630,6 @@ async def admin_list_callback(callback: types.CallbackQuery):
     else:
         await callback.message.answer(text, parse_mode="Markdown")
     await callback.answer()
-
-@dp.callback_query(F.data == "admin_stats")
-async def admin_stats(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("⛔ Доступ запрещен!")
-        return
-    
-    library = load_library()
-    playlists = load_user_playlists()
-    
-    total_tracks = sum(len(tracks) for tracks in library.values())
-    total_users = len(playlists)
-    total_playlists = sum(len(pl) for pl in playlists.values())
-    total_user_tracks = sum(len(tracks) for pl in playlists.values() for tracks in pl.values())
-    
-    stats_text = "📈 *Статистика*\n\n"
-    stats_text += f"🎵 *Основные треки:* {total_tracks}\n"
-    stats_text += f"📁 *Категорий:* {len(CATEGORIES)}\n"
-    stats_text += f"👤 *Пользователей:* {total_users}\n"
-    stats_text += f"📋 *Плейлистов:* {total_playlists}\n"
-    stats_text += f"🎵 *Треков в плейлистах:* {total_user_tracks}\n\n"
-    
-    stats_text += "*По основным категориям:*\n"
-    for key, cat in CATEGORIES.items():
-        count = len(library.get(key, {}))
-        stats_text += f"{cat['emoji']} {cat['name']}: {count} треков\n"
-    
-    await callback.message.answer(stats_text, parse_mode="Markdown")
-    await callback.answer()
-
-@dp.callback_query(F.data == "admin_refresh")
-async def admin_refresh_file_ids(callback: types.CallbackQuery):
-    """Обновляет все file_id для треков, у которых есть локальные копии"""
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("⛔ Доступ запрещен!")
-        return
-    
-    await callback.answer("🔄 Начинаю обновление...", show_alert=True)
-    
-    library = load_library()
-    updated = 0
-    failed = 0
-    
-    for category, tracks in library.items():
-        for track_id, track_data in tracks.items():
-            if 'local_path' in track_data and os.path.exists(track_data['local_path']):
-                try:
-                    new_file_id = await upload_audio_to_telegram(track_data['local_path'])
-                    if new_file_id:
-                        track_data['file_id'] = new_file_id
-                        updated += 1
-                        await asyncio.sleep(0.5)
-                    else:
-                        failed += 1
-                except Exception as e:
-                    logger.error(f"Ошибка обновления {track_id}: {e}")
-                    failed += 1
-    
-    save_library(library)
-    
-    await callback.message.answer(
-        f"✅ *Обновление завершено!*\n\n"
-        f"🔄 Обновлено: {updated}\n"
-        f"❌ Ошибок: {failed}",
-        parse_mode="Markdown"
-    )
 
 @dp.callback_query(F.data == "back_to_menu")
 async def back_to_menu(callback: types.CallbackQuery):
@@ -1147,30 +650,26 @@ async def cancel_callback(callback: types.CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
-@dp.callback_query(F.data == "noop")
-async def noop_callback(callback: types.CallbackQuery):
-    await callback.answer()
-
 # ---------- ЗАПУСК ----------
 async def main():
-    print("🎵 Music Flow Bot (с локальным хранением)")
+    print("🎵 Музыкальный бот")
     print("=" * 40)
-    print("📌 Основные категории:")
+    print("📌 Категории:")
     print("  🎻 Классика")
-    print("  🎧 Lo-Fi Chill")
+    print("  🎧 Lo-Fi")
     print("  🌿 Природа")
-    print("\n📌 Команды:")
-    print("  /start   - Главное меню")
-    print("  /menu    - Показать меню")
-    print("  /random  - Случайный трек")
-    print("  /refresh - Обновить все file_id")
-    print("\n📌 Админ-команды:")
-    print("  /add      - Добавить трек")
-    print("  /delete   - Удалить трек")
-    print("  /list     - Список треков")
+    print("  🎵 Другое")
     print("=" * 40)
-    print("💾 Файлы сохраняются локально в папке 'music_files'")
-    print("🔄 При ошибке file_id автоматически восстанавливается")
+    print("📌 Команды:")
+    print("  /start  - Главное меню")
+    print("  /menu   - Меню")
+    print("  /random - Случайный трек")
+    print("  /add    - Добавить трек (админ)")
+    print("  /delete - Удалить трек (админ)")
+    print("  /list   - Список треков (админ)")
+    print("=" * 40)
+    print("💾 Файлы хранятся в папке 'music_files'")
+    print("📦 Данные в 'music_data.json'")
     print("🤖 Бот запущен!")
 
     await dp.start_polling(bot)
