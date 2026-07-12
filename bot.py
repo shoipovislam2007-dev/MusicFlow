@@ -19,7 +19,13 @@ ADMIN_ID = int(os.getenv('ADMIN_ID', 7921694564))
 STORAGE_FILE = 'music_library.json'
 USER_PLAYLISTS_FILE = 'user_playlists.json'
 
-logging.basicConfig(level=logging.INFO)
+# Включаем логирование для отладки
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 storage = MemoryStorage()
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=storage)
@@ -46,33 +52,46 @@ def load_library():
         try:
             with open(STORAGE_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except:
+        except Exception as e:
+            logger.error(f"Ошибка загрузки библиотеки: {e}")
             return {}
     return {}
 
 def save_library(library):
-    with open(STORAGE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(library, f, indent=2, ensure_ascii=False)
+    try:
+        with open(STORAGE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(library, f, indent=2, ensure_ascii=False)
+        logger.info("Библиотека сохранена")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения библиотеки: {e}")
 
 def load_user_playlists():
     if os.path.exists(USER_PLAYLISTS_FILE):
         try:
             with open(USER_PLAYLISTS_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except:
+        except Exception as e:
+            logger.error(f"Ошибка загрузки плейлистов: {e}")
             return {}
     return {}
 
 def save_user_playlists(playlists):
-    with open(USER_PLAYLISTS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(playlists, f, indent=2, ensure_ascii=False)
+    try:
+        with open(USER_PLAYLISTS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(playlists, f, indent=2, ensure_ascii=False)
+        logger.info("Плейлисты сохранены")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения плейлистов: {e}")
 
 def get_track_duration(seconds):
     if not seconds:
         return "0:00"
-    minutes = seconds // 60
-    seconds = seconds % 60
-    return f"{minutes}:{seconds:02d}"
+    try:
+        minutes = int(seconds) // 60
+        seconds = int(seconds) % 60
+        return f"{minutes}:{seconds:02d}"
+    except:
+        return "0:00"
 
 # ---------- КЛАВИАТУРЫ ----------
 def get_main_menu():
@@ -312,8 +331,20 @@ async def cmd_random(message: types.Message):
     category, track_id, track_data = random.choice(all_tracks)
     
     try:
+        # Проверяем наличие file_id
+        file_id = track_data.get('file_id')
+        if not file_id:
+            await message.answer(
+                "❌ *Ошибка: file_id не найден*\n\n"
+                f"Трек: {track_data.get('title', 'Без названия')}",
+                parse_mode="Markdown"
+            )
+            return
+            
+        logger.info(f"Попытка воспроизведения: {track_data.get('title')}, file_id: {file_id[:20]}...")
+        
         await message.answer_audio(
-            track_data['file_id'],
+            file_id,
             caption=(
                 f"🎲 *Случайный трек*\n\n"
                 f"🎵 *Название:* {track_data.get('title', 'Без названия')}\n"
@@ -323,11 +354,14 @@ async def cmd_random(message: types.Message):
             parse_mode="Markdown",
             reply_markup=get_main_menu()
         )
+        logger.info(f"Трек успешно воспроизведен: {track_data.get('title')}")
     except Exception as e:
-        logging.error(f"Ошибка при воспроизведении: {e}")
+        logger.error(f"Ошибка при воспроизведении трека: {e}", exc_info=True)
         await message.answer(
-            "❌ *Ошибка при воспроизведении трека*\n\n"
-            "Возможно, файл был удален. Попробуйте другой трек.",
+            f"❌ *Ошибка при воспроизведении трека*\n\n"
+            f"Трек: {track_data.get('title', 'Без названия')}\n"
+            f"Ошибка: {str(e)[:100]}\n\n"
+            f"Попробуйте другой трек или перезагрузите бота.",
             parse_mode="Markdown"
         )
 
@@ -379,20 +413,46 @@ async def admin_list(message: types.Message):
         
         for track_id, track_data in tracks.items():
             duration = get_track_duration(track_data.get('duration', 0))
-            text += f"  • `{track_id}` — {track_data.get('title', 'Без названия')} [{duration}]\n"
+            file_id_preview = track_data.get('file_id', '')[:20] if track_data.get('file_id') else 'Нет file_id'
+            text += f"  • `{track_id}` — {track_data.get('title', 'Без названия')} [{duration}] (file_id: {file_id_preview}...)\n"
         
         text += "\n"
         total += len(tracks)
     
     text += f"\n📌 *Всего треков:* {total}"
     
-    # Разбиваем на части, если текст слишком длинный
     if len(text) > 4000:
         parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
         for part in parts:
             await message.answer(part, parse_mode="Markdown")
     else:
         await message.answer(text, parse_mode="Markdown")
+
+@dp.message(Command("check"))
+async def check_tracks(message: types.Message):
+    """Команда для проверки треков"""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ Доступ запрещен!")
+        return
+    
+    library = load_library()
+    if not library:
+        await message.answer("📊 *Библиотека пуста*", parse_mode="Markdown")
+        return
+    
+    text = "🔍 *Проверка треков*\n\n"
+    
+    for category, tracks in library.items():
+        text += f"📁 *{category}* ({len(tracks)} треков)\n"
+        for track_id, track_data in tracks.items():
+            file_id = track_data.get('file_id')
+            status = "✅" if file_id else "❌"
+            text += f"  {status} `{track_id}` — {track_data.get('title', 'Без названия')}\n"
+            if not file_id:
+                text += f"     ⚠️ *Нет file_id!*\n"
+        text += "\n"
+    
+    await message.answer(text, parse_mode="Markdown")
 
 # ---------- CALLBACK-ЗАПРОСЫ ----------
 @dp.callback_query(F.data.startswith("playlist_track_"))
@@ -424,10 +484,15 @@ async def play_playlist_track(callback: types.CallbackQuery):
         return
     
     track_data = tracks[track_index]
+    file_id = track_data.get('file_id')
+    
+    if not file_id:
+        await callback.answer("❌ Ошибка: file_id не найден!")
+        return
     
     try:
         await callback.message.answer_audio(
-            track_data['file_id'],
+            file_id,
             caption=(
                 f"🎵 *{track_data.get('title', 'Без названия')}*\n"
                 f"📁 *Плейлист:* {playlist_name}\n"
@@ -442,8 +507,8 @@ async def play_playlist_track(callback: types.CallbackQuery):
         )
         await callback.answer()
     except Exception as e:
-        logging.error(f"Ошибка воспроизведения из плейлиста: {e}")
-        await callback.answer("❌ Ошибка при воспроизведении трека!")
+        logger.error(f"Ошибка воспроизведения из плейлиста: {e}", exc_info=True)
+        await callback.answer(f"❌ Ошибка: {str(e)[:50]}", show_alert=True)
 
 @dp.callback_query(F.data.startswith("play_"))
 async def play_category_track(callback: types.CallbackQuery):
@@ -460,10 +525,15 @@ async def play_category_track(callback: types.CallbackQuery):
     
     track_id = random.choice(list(library[category].keys()))
     track_data = library[category][track_id]
+    file_id = track_data.get('file_id')
+    
+    if not file_id:
+        await callback.answer("❌ Ошибка: file_id не найден!")
+        return
     
     try:
         await callback.message.answer_audio(
-            track_data['file_id'],
+            file_id,
             caption=(
                 f"🎵 *Сейчас играет*\n\n"
                 f"*Название:* {track_data.get('title', 'Без названия')}\n"
@@ -480,8 +550,8 @@ async def play_category_track(callback: types.CallbackQuery):
         )
         await callback.answer()
     except Exception as e:
-        logging.error(f"Ошибка воспроизведения: {e}")
-        await callback.answer("❌ Ошибка при воспроизведении трека!")
+        logger.error(f"Ошибка воспроизведения: {e}", exc_info=True)
+        await callback.answer(f"❌ Ошибка: {str(e)[:50]}", show_alert=True)
 
 @dp.callback_query(F.data == "random")
 async def random_track(callback: types.CallbackQuery):
@@ -497,10 +567,15 @@ async def random_track(callback: types.CallbackQuery):
         return
     
     category, track_id, track_data = random.choice(all_tracks)
+    file_id = track_data.get('file_id')
+    
+    if not file_id:
+        await callback.answer("❌ Ошибка: file_id не найден!")
+        return
     
     try:
         await callback.message.answer_audio(
-            track_data['file_id'],
+            file_id,
             caption=(
                 f"🎲 *Случайный трек*\n\n"
                 f"*Название:* {track_data.get('title', 'Без названия')}\n"
@@ -512,8 +587,8 @@ async def random_track(callback: types.CallbackQuery):
         )
         await callback.answer()
     except Exception as e:
-        logging.error(f"Ошибка воспроизведения: {e}")
-        await callback.answer("❌ Ошибка при воспроизведении трека!")
+        logger.error(f"Ошибка воспроизведения: {e}", exc_info=True)
+        await callback.answer(f"❌ Ошибка: {str(e)[:50]}", show_alert=True)
 
 # ---------- АДМИН-ДОБАВЛЕНИЕ ----------
 @dp.callback_query(F.data.startswith("cat_"))
@@ -558,20 +633,29 @@ async def admin_receive_audio(message: types.Message, state: FSMContext):
     audio = message.audio
     title = message.caption or audio.file_name or audio.title or "Без названия"
     
+    # Логируем полученный file_id
+    logger.info(f"Получен аудиофайл: {title}, file_id: {audio.file_id[:20]}...")
+    
     library = load_library()
     if category not in library:
         library[category] = {}
     
     track_id = str(int(time.time()))
-    library[category][track_id] = {
-        "file_id": audio.file_id,
+    
+    # Сохраняем полную информацию о файле
+    track_data = {
+        "file_id": audio.file_id,  # Это основной file_id для воспроизведения
         "title": title,
         "duration": audio.duration,
         "added_by": message.from_user.id,
         "added_by_name": message.from_user.full_name,
-        "added_date": datetime.now().isoformat()
+        "added_date": datetime.now().isoformat(),
+        "file_name": audio.file_name,
+        "mime_type": audio.mime_type,
+        "file_size": audio.file_size
     }
     
+    library[category][track_id] = track_data
     save_library(library)
     
     duration = get_track_duration(audio.duration)
@@ -581,7 +665,8 @@ async def admin_receive_audio(message: types.Message, state: FSMContext):
         f"🎵 *Название:* {title}\n"
         f"⏱ *Длительность:* {duration}\n"
         f"👤 *Добавил:* {message.from_user.full_name}\n\n"
-        f"⚡ *Трек загружается мгновенно!*",
+        f"⚡ *Трек загружается мгновенно!*\n"
+        f"🔑 *ID трека:* `{track_id}`",
         parse_mode="Markdown",
         reply_markup=get_main_menu()
     )
@@ -592,7 +677,7 @@ async def admin_wrong_file(message: types.Message):
     if message.from_user.id == ADMIN_ID:
         await message.answer(
             "❌ *Неверный формат*\n\n"
-            "Отправь именно аудиофайл.",
+            "Отправь именно аудиофайл (MP3, OGG, M4A и т.д.).",
             parse_mode="Markdown"
         )
 
@@ -727,6 +812,9 @@ async def add_track_to_playlist(message: types.Message, state: FSMContext):
     
     audio = message.audio
     title = message.caption or audio.file_name or audio.title or "Без названия"
+    
+    # Логируем добавление в плейлист
+    logger.info(f"Добавление в плейлист {playlist_name}: {title}, file_id: {audio.file_id[:20]}...")
     
     track_data = {
         "file_id": audio.file_id,
@@ -872,10 +960,15 @@ async def random_from_playlist(callback: types.CallbackQuery):
         return
     
     track_data = random.choice(tracks)
+    file_id = track_data.get('file_id')
+    
+    if not file_id:
+        await callback.answer("❌ Ошибка: file_id не найден!")
+        return
     
     try:
         await callback.message.answer_audio(
-            track_data['file_id'],
+            file_id,
             caption=(
                 f"🎲 *Случайный трек из '{playlist_name}'*\n\n"
                 f"🎵 *Название:* {track_data.get('title', 'Без названия')}\n"
@@ -885,8 +978,8 @@ async def random_from_playlist(callback: types.CallbackQuery):
         )
         await callback.answer()
     except Exception as e:
-        logging.error(f"Ошибка воспроизведения: {e}")
-        await callback.answer("❌ Ошибка при воспроизведении трека!")
+        logger.error(f"Ошибка воспроизведения: {e}", exc_info=True)
+        await callback.answer(f"❌ Ошибка: {str(e)[:50]}", show_alert=True)
 
 @dp.callback_query(F.data.startswith("remove_playlist_"))
 async def remove_playlist(callback: types.CallbackQuery):
@@ -1118,6 +1211,7 @@ async def main():
     print("  /start   - Главное меню")
     print("  /menu    - Показать меню")
     print("  /random  - Случайный трек")
+    print("  /check   - Проверить треки")
     print("\n📌 Админ-команды:")
     print("  /add      - Добавить трек")
     print("  /delete   - Удалить трек")
