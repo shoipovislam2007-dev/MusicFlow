@@ -1,678 +1,362 @@
 import asyncio
 import logging
-import os
-import json
-import random
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.fsm.state import State, StatesGroup
+import sqlite3
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.filters import Command, CommandStart
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+    LabeledPrice, PreCheckoutQuery, FSInputFile, Audio
+)
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from datetime import datetime
-import aiohttp
-import aiofiles
-
-# ---------- НАСТРОЙКИ ----------
-API_TOKEN = os.getenv('API_TOKEN', '8973047993:AAGGJWwmcMRK9eiBOYM8sOKXPs_zuTHhh78')
-ADMIN_ID = int(os.getenv('ADMIN_ID', 7921694564))
-MUSIC_FOLDER = 'music_files'
-
-# Создаем папку для музыки
-os.makedirs(MUSIC_FOLDER, exist_ok=True)
-
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+# ==================== НАСТРОЙКИ ====================
+BOT_TOKEN = "8973047993:AAGGJWwmcMRK9eiBOYM8sOKXPs_zuTHhh78"
+ADMIN_ID = 7921694564  # ← ЗАМЕНИ на свой Telegram ID
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-storage = MemoryStorage()
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher(storage=storage)
-
-# ---------- КАТЕГОРИИ ----------
-CATEGORIES = {
-    "classical": {"name": "Классика", "emoji": "🎻"},
-    "lofi": {"name": "Lo-Fi", "emoji": "🎧"},
-    "nature": {"name": "Природа", "emoji": "🌿"},
-    "other": {"name": "Другое", "emoji": "🎵"}
-}
-
-# ---------- FSM ----------
-class AdminStates(StatesGroup):
-    waiting_for_category = State()
-    waiting_for_file = State()
-    waiting_for_delete = State()
-    waiting_for_playlist_name = State()
-    waiting_for_playlist_track = State()
-
-# ---------- РАБОТА С ДАННЫМИ ----------
-def load_data():
-    """Загружает данные из JSON файла"""
-    data_file = 'music_data.json'
-    if os.path.exists(data_file):
-        try:
-            with open(data_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-def save_data(data):
-    """Сохраняет данные в JSON файл"""
-    data_file = 'music_data.json'
-    with open(data_file, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-def get_track_path(filename):
-    """Возвращает полный путь к файлу трека"""
-    return os.path.join(MUSIC_FOLDER, filename)
-
-# ---------- КЛАВИАТУРЫ ----------
-def get_main_menu():
-    builder = InlineKeyboardBuilder()
-    
-    # Кнопки категорий
-    for key, cat in CATEGORIES.items():
-        builder.add(InlineKeyboardButton(
-            text=f"{cat['emoji']} {cat['name']}",
-            callback_data=f"play_{key}"
-        ))
-    
-    builder.adjust(2)
-    
-    builder.row(
-        InlineKeyboardButton(text="🎲 Случайный трек", callback_data="random"),
-        width=1
-    )
-    
-    builder.row(
-        InlineKeyboardButton(text="⚙️ Управление", callback_data="admin_panel"),
-        width=1
-    )
-    
-    return builder.as_markup()
-
-def get_admin_panel():
-    builder = InlineKeyboardBuilder()
-    
-    builder.row(
-        InlineKeyboardButton(text="📥 Добавить трек", callback_data="admin_add"),
-        InlineKeyboardButton(text="🗑 Удалить трек", callback_data="admin_delete"),
-        width=2
-    )
-    
-    builder.row(
-        InlineKeyboardButton(text="📊 Список треков", callback_data="admin_list"),
-        width=1
-    )
-    
-    builder.row(
-        InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu"),
-        width=1
-    )
-    
-    return builder.as_markup()
-
-def get_category_buttons():
-    builder = InlineKeyboardBuilder()
-    
-    for key, cat in CATEGORIES.items():
-        builder.add(InlineKeyboardButton(
-            text=f"{cat['emoji']} {cat['name']}",
-            callback_data=f"cat_{key}"
-        ))
-    
-    builder.adjust(2)
-    builder.row(
-        InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"),
-        width=1
-    )
-    
-    return builder.as_markup()
-
-def get_admin_delete_buttons():
-    builder = InlineKeyboardBuilder()
-    
-    for key, cat in CATEGORIES.items():
-        builder.add(InlineKeyboardButton(
-            text=f"{cat['emoji']} {cat['name']}",
-            callback_data=f"delcat_{key}"
-        ))
-    
-    builder.adjust(2)
-    builder.row(
-        InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"),
-        width=1
-    )
-    
-    return builder.as_markup()
-
-# ---------- КОМАНДЫ ----------
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    welcome = (
-        "🎵 *Музыкальный бот*\n\n"
-        "📌 *Категории:*\n"
-        "• 🎻 Классика\n"
-        "• 🎧 Lo-Fi\n"
-        "• 🌿 Природа\n"
-        "• 🎵 Другое\n\n"
-        "🎲 Случайный трек\n"
-        "⚙️ Управление (только админ)"
-    )
-    
-    await message.answer(welcome, reply_markup=get_main_menu(), parse_mode="Markdown")
-    
-    if message.from_user.id == ADMIN_ID:
-        await message.answer("👑 *Режим администратора*", parse_mode="Markdown")
-
-@dp.message(Command("menu"))
-async def cmd_menu(message: types.Message):
-    await message.answer("📋 *Главное меню*", reply_markup=get_main_menu(), parse_mode="Markdown")
-
-@dp.message(Command("random"))
-async def cmd_random(message: types.Message):
-    data = load_data()
-    all_tracks = []
-    
-    for category, tracks in data.items():
-        if category in CATEGORIES:
-            for track_id, track in tracks.items():
-                all_tracks.append((category, track_id, track))
-    
-    if not all_tracks:
-        await message.answer("❌ *Нет треков в библиотеке*", parse_mode="Markdown")
-        return
-    
-    category, track_id, track = random.choice(all_tracks)
-    
-    # Путь к файлу
-    file_path = get_track_path(track['filename'])
-    
-    if not os.path.exists(file_path):
-        await message.answer("❌ *Файл не найден*", parse_mode="Markdown")
-        return
-    
-    try:
-        audio_file = FSInputFile(file_path)
-        await message.answer_audio(
-            audio_file,
-            caption=(
-                f"🎲 *Случайный трек*\n\n"
-                f"🎵 {track.get('title', 'Без названия')}\n"
-                f"📁 {CATEGORIES[category]['emoji']} {CATEGORIES[category]['name']}"
-            ),
-            parse_mode="Markdown",
-            reply_markup=get_main_menu()
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher(storage=MemoryStorage())
+router = Router()
+# ==================== БАЗА ДАННЫХ ====================
+def init_db():
+    conn = sqlite3.connect("music_bot.db")
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS tracks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            file_id TEXT NOT NULL,
+            added_by INTEGER NOT NULL,
+            is_public INTEGER DEFAULT 1
         )
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await message.answer(f"❌ *Ошибка:* {str(e)}", parse_mode="Markdown")
-
-# ---------- АДМИН КОМАНДЫ ----------
-@dp.message(Command("add"))
-async def admin_add(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ *Доступ запрещен*", parse_mode="Markdown")
-        return
-    
-    await message.answer(
-        "📥 *Добавление трека*\n\n"
-        "Выбери категорию:",
-        reply_markup=get_category_buttons(),
-        parse_mode="Markdown"
-    )
-
-@dp.message(Command("delete"))
-async def admin_delete(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ *Доступ запрещен*", parse_mode="Markdown")
-        return
-    
-    await message.answer(
-        "🗑 *Удаление трека*\n\n"
-        "Выбери категорию:",
-        reply_markup=get_admin_delete_buttons(),
-        parse_mode="Markdown"
-    )
-
-@dp.message(Command("list"))
-async def admin_list(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ *Доступ запрещен*", parse_mode="Markdown")
-        return
-    
-    data = load_data()
-    if not data:
-        await message.answer("📊 *Библиотека пуста*", parse_mode="Markdown")
-        return
-    
-    text = "📊 *Список треков*\n\n"
-    total = 0
-    
-    for category, tracks in data.items():
-        if category in CATEGORIES:
-            cat_name = CATEGORIES[category]['name']
-            cat_emoji = CATEGORIES[category]['emoji']
-            text += f"📁 *{cat_emoji} {cat_name}* ({len(tracks)} треков)\n"
-            
-            for track_id, track in tracks.items():
-                text += f"  • {track.get('title', 'Без названия')}\n"
-            
-            text += "\n"
-            total += len(tracks)
-    
-    text += f"📌 *Всего:* {total}"
-    
-    if len(text) > 4000:
-        parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
-        for part in parts:
-            await message.answer(part, parse_mode="Markdown")
-    else:
-        await message.answer(text, parse_mode="Markdown")
-
-# ---------- ОБРАБОТКА ТЕКСТА ----------
-@dp.message()
-async def handle_text(message: types.Message):
-    help_text = (
-        "🎵 *Команды бота*\n\n"
-        "📌 /start - Главное меню\n"
-        "📌 /menu - Показать меню\n"
-        "📌 /random - Случайный трек\n"
-        "📌 /add - Добавить трек (админ)\n"
-        "📌 /delete - Удалить трек (админ)\n"
-        "📌 /list - Список треков (админ)"
-    )
-    await message.answer(help_text, parse_mode="Markdown", reply_markup=get_main_menu())
-
-# ---------- CALLBACK ЗАПРОСЫ ----------
-@dp.callback_query(F.data.startswith("play_"))
-async def play_category(callback: types.CallbackQuery):
-    category = callback.data.split("_")[1]
-    
-    if category == "list" or category == "track":
-        return
-    
-    data = load_data()
-    
-    if category not in data or not data[category]:
-        await callback.answer("❌ В этой категории нет треков!")
-        return
-    
-    # Выбираем случайный трек из категории
-    track_id = random.choice(list(data[category].keys()))
-    track = data[category][track_id]
-    
-    file_path = get_track_path(track['filename'])
-    
-    if not os.path.exists(file_path):
-        await callback.answer("❌ Файл не найден!")
-        return
-    
-    try:
-        audio_file = FSInputFile(file_path)
-        await callback.message.answer_audio(
-            audio_file,
-            caption=(
-                f"🎵 *{track.get('title', 'Без названия')}*\n"
-                f"📁 {CATEGORIES[category]['emoji']} {CATEGORIES[category]['name']}"
-            ),
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="🎲 Другой трек", callback_data=f"play_{category}")],
-                    [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
-                ]
-            )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            stars_donated INTEGER DEFAULT 0
         )
-        await callback.answer()
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await callback.answer(f"❌ Ошибка: {str(e)[:50]}")
-
-@dp.callback_query(F.data == "random")
-async def random_track(callback: types.CallbackQuery):
-    data = load_data()
-    all_tracks = []
-    
-    for category, tracks in data.items():
-        if category in CATEGORIES:
-            for track_id, track in tracks.items():
-                all_tracks.append((category, track_id, track))
-    
-    if not all_tracks:
-        await callback.answer("❌ Нет треков!")
-        return
-    
-    category, track_id, track = random.choice(all_tracks)
-    file_path = get_track_path(track['filename'])
-    
-    if not os.path.exists(file_path):
-        await callback.answer("❌ Файл не найден!")
-        return
-    
-    try:
-        audio_file = FSInputFile(file_path)
-        await callback.message.answer_audio(
-            audio_file,
-            caption=(
-                f"🎲 *Случайный трек*\n\n"
-                f"🎵 {track.get('title', 'Без названия')}\n"
-                f"📁 {CATEGORIES[category]['emoji']} {CATEGORIES[category]['name']}"
-            ),
-            parse_mode="Markdown",
-            reply_markup=get_main_menu()
-        )
-        await callback.answer()
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await callback.answer(f"❌ Ошибка: {str(e)[:50]}")
-
-# ---------- АДМИН-ДОБАВЛЕНИЕ ----------
-@dp.callback_query(F.data.startswith("cat_"))
-async def admin_choose_category(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("⛔ Доступ запрещен!")
-        return
-    
-    if callback.data.startswith("delcat_"):
-        return
-    
-    category = callback.data.split("_")[1]
-    await state.update_data(category=category)
-    await state.set_state(AdminStates.waiting_for_file)
-    
-    await callback.message.answer(
-        f"📤 *Отправь MP3 файл*\n\n"
-        f"📁 Категория: {CATEGORIES[category]['emoji']} {CATEGORIES[category]['name']}\n\n"
-        f"💡 В подписи к файлу укажи название трека\n"
-        f"📝 Пример: 'Мой любимый трек'\n\n"
-        f"⚠️ Файл будет сохранен на сервере",
-        parse_mode="Markdown"
+    """)
+    conn.commit()
+    conn.close()
+def db_query(query, params=(), fetch=False):
+    conn = sqlite3.connect("music_bot.db")
+    cur = conn.cursor()
+    cur.execute(query, params)
+    result = cur.fetchall() if fetch else None
+    conn.commit()
+    conn.close()
+    return result
+# ==================== СОСТОЯНИЯ ====================
+class AddTrack(StatesGroup):
+    choosing_category = State()
+    waiting_audio = State()
+    waiting_title = State()
+class DonateState(StatesGroup):
+    choosing_amount = State()
+# ==================== КАТЕГОРИИ ====================
+ADMIN_CATEGORIES = ["lofi", "classic", "phonk", "rock", "chill"]
+# ==================== КЛАВИАТУРЫ ====================
+def main_menu(user_id: int) -> InlineKeyboardMarkup:
+    kb = [
+        [InlineKeyboardButton(text="🎧 Lofi", callback_data="cat:lofi"),
+         InlineKeyboardButton(text="🎼 Classic", callback_data="cat:classic")],
+        [InlineKeyboardButton(text="🔥 Phonk", callback_data="cat:phonk"),
+         InlineKeyboardButton(text="🎸 Rock", callback_data="cat:rock")],
+        [InlineKeyboardButton(text="🌙 Chill", callback_data="cat:chill")],
+        [InlineKeyboardButton(text="⭐ Мой плейлист", callback_data="my_playlist")],
+        [InlineKeyboardButton(text="➕ Добавить трек", callback_data="add_track")],
+        [InlineKeyboardButton(text="💖 Поддержать (Stars)", callback_data="donate")],
+    ]
+    if user_id == ADMIN_ID:
+        kb.append([InlineKeyboardButton(text="👑 Админ-панель", callback_data="admin_panel")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+def category_menu(category: str, tracks, user_id: int, is_personal=False) -> InlineKeyboardMarkup:
+    kb = []
+    for track_id, title, _ in tracks:
+        row = [InlineKeyboardButton(text=f"▶️ {title[:35]}", callback_data=f"play:{track_id}")]
+        # Кнопка удаления: админ может удалять из общих, юзер — из своих
+        if is_personal or user_id == ADMIN_ID:
+            row.append(InlineKeyboardButton(text="🗑", callback_data=f"del:{track_id}"))
+        kb.append(row)
+    kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+def donate_menu() -> InlineKeyboardMarkup:
+    amounts = [10, 25, 50, 75, 100]
+    kb = [[InlineKeyboardButton(text=f"⭐ {a} Stars", callback_data=f"pay:{a}")] for a in amounts]
+    kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+def add_track_menu(user_id: int) -> InlineKeyboardMarkup:
+    kb = []
+    if user_id == ADMIN_ID:
+        for c in ADMIN_CATEGORIES:
+            kb.append([InlineKeyboardButton(text=f"📁 {c.capitalize()}", callback_data=f"addcat:{c}")])
+    kb.append([InlineKeyboardButton(text="⭐ В мой плейлист", callback_data="addcat:personal")])
+    kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+def admin_panel() -> InlineKeyboardMarkup:
+    kb = [
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="💰 Донаты", callback_data="admin_donates")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+# ==================== ХЕНДЛЕРЫ ====================
+@router.message(CommandStart())
+async def start_cmd(message: Message):
+    user = message.from_user
+    db_query(
+        "INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)",
+        (user.id, user.username or "")
     )
-    await callback.answer()
-
-@dp.message(AdminStates.waiting_for_file, F.audio)
-async def admin_receive_audio(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Доступ запрещен!")
-        return
-    
-    data = await state.get_data()
-    category = data.get('category')
-    
-    if not category:
-        await message.answer("❌ Ошибка! Выбери категорию заново через /add")
-        await state.clear()
-        return
-    
-    audio = message.audio
-    
-    # Получаем название из подписи или имени файла
-    title = message.caption or audio.file_name or "Без названия"
-    
-    # Скачиваем файл
-    try:
-        file = await bot.get_file(audio.file_id)
-        file_path = file.file_path
-        
-        # Генерируем имя файла
-        timestamp = int(datetime.now().timestamp())
-        safe_title = ''.join(c for c in title if c.isalnum() or c in ' ._-')[:50]
-        filename = f"{timestamp}_{safe_title}.mp3"
-        local_path = get_track_path(filename)
-        
-        # Скачиваем файл
-        url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_path}"
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    async with aiofiles.open(local_path, 'wb') as f:
-                        await f.write(await response.read())
-                else:
-                    await message.answer("❌ Ошибка скачивания файла!")
-                    return
-        
-        # Сохраняем в JSON
-        music_data = load_data()
-        if category not in music_data:
-            music_data[category] = {}
-        
-        track_id = str(timestamp)
-        music_data[category][track_id] = {
-            "title": title,
-            "filename": filename,
-            "duration": audio.duration,
-            "added_date": datetime.now().isoformat()
-        }
-        
-        save_data(music_data)
-        
-        await message.answer(
-            f"✅ *Трек добавлен!*\n\n"
-            f"📁 Категория: {CATEGORIES[category]['emoji']} {CATEGORIES[category]['name']}\n"
-            f"🎵 Название: {title}\n"
-            f"⏱ Длительность: {audio.duration//60}:{audio.duration%60:02d}",
-            parse_mode="Markdown",
-            reply_markup=get_main_menu()
-        )
-        await state.clear()
-        
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await message.answer(f"❌ *Ошибка:* {str(e)}", parse_mode="Markdown")
-        await state.clear()
-
-@dp.message(AdminStates.waiting_for_file)
-async def admin_wrong_file(message: types.Message):
-    if message.from_user.id == ADMIN_ID:
-        await message.answer("❌ *Отправь именно аудиофайл*", parse_mode="Markdown")
-
-# ---------- АДМИН-УДАЛЕНИЕ ----------
-@dp.callback_query(F.data.startswith("delcat_"))
-async def admin_delete_category(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("⛔ Доступ запрещен!")
-        return
-    
-    category = callback.data.split("_")[1]
-    await state.update_data(category=category)
-    await state.set_state(AdminStates.waiting_for_delete)
-    
-    data = load_data()
-    
-    if category not in data or not data[category]:
-        await callback.answer("❌ В этой категории нет треков!")
-        return
-    
-    text = f"🗑 *Удаление трека из {CATEGORIES[category]['emoji']} {CATEGORIES[category]['name']}*\n\n"
-    text += "Отправь номер трека:\n\n"
-    
-    i = 1
-    for track_id, track in data[category].items():
-        text += f"{i}. {track.get('title', 'Без названия')}\n"
-        i += 1
-    
-    await callback.message.answer(text, parse_mode="Markdown")
-    await callback.answer()
-
-@dp.message(AdminStates.waiting_for_delete)
-async def admin_delete_track(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Доступ запрещен!")
-        return
-    
-    data = await state.get_data()
-    category = data.get('category')
-    
-    if not category:
-        await message.answer("❌ Ошибка! Попробуй снова.")
-        await state.clear()
-        return
-    
-    try:
-        track_num = int(message.text.strip()) - 1
-        music_data = load_data()
-        
-        if category not in music_data:
-            await message.answer("❌ Категория не найдена!")
-            return
-        
-        tracks = list(music_data[category].items())
-        
-        if track_num < 0 or track_num >= len(tracks):
-            await message.answer("❌ Неверный номер!")
-            return
-        
-        track_id, track = tracks[track_num]
-        
-        # Удаляем файл
-        file_path = get_track_path(track['filename'])
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        
-        # Удаляем из JSON
-        del music_data[category][track_id]
-        if not music_data[category]:
-            del music_data[category]
-        
-        save_data(music_data)
-        
-        await message.answer(
-            f"✅ *Трек удален!*\n\n"
-            f"🎵 {track.get('title', 'Без названия')}",
-            parse_mode="Markdown",
-            reply_markup=get_main_menu()
-        )
-        await state.clear()
-        
-    except ValueError:
-        await message.answer("❌ Отправь номер (число)!")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {str(e)}")
-        await state.clear()
-
-# ---------- АДМИН-ПАНЕЛЬ ----------
-@dp.callback_query(F.data == "admin_panel")
-async def admin_panel(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("⛔ Доступ запрещен!")
-        return
-    
-    await callback.message.answer(
-        "⚙️ *Панель управления*\n\n"
-        "Выберите действие:",
-        reply_markup=get_admin_panel(),
-        parse_mode="Markdown"
+    text = (
+        f"🎵 <b>Привет, {user.first_name}!</b>\n\n"
+        f"Добро пожаловать в <b>Music Bot</b> — твой карманный музыкальный плеер.\n\n"
+        f"🎧 Выбирай жанр\n"
+        f"⭐ Создавай свой плейлист\n"
+        f"💖 Поддержи разработчика звёздами\n\n"
+        f"<i>Выбери раздел ниже 👇</i>"
     )
-    await callback.answer()
-
-@dp.callback_query(F.data == "admin_add")
-async def admin_add_callback(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("⛔ Доступ запрещен!")
-        return
-    
-    await callback.message.answer(
-        "📥 *Выбери категорию*",
-        reply_markup=get_category_buttons(),
-        parse_mode="Markdown"
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "admin_delete")
-async def admin_delete_callback(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("⛔ Доступ запрещен!")
-        return
-    
-    await callback.message.answer(
-        "🗑 *Выбери категорию*",
-        reply_markup=get_admin_delete_buttons(),
-        parse_mode="Markdown"
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "admin_list")
-async def admin_list_callback(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("⛔ Доступ запрещен!")
-        return
-    
-    data = load_data()
-    if not data:
-        await callback.message.answer("📊 *Библиотека пуста*", parse_mode="Markdown")
-        await callback.answer()
-        return
-    
-    text = "📊 *Список треков*\n\n"
-    total = 0
-    
-    for category, tracks in data.items():
-        if category in CATEGORIES:
-            cat_name = CATEGORIES[category]['name']
-            cat_emoji = CATEGORIES[category]['emoji']
-            text += f"📁 *{cat_emoji} {cat_name}* ({len(tracks)} треков)\n"
-            
-            for track_id, track in tracks.items():
-                text += f"  • {track.get('title', 'Без названия')}\n"
-            
-            text += "\n"
-            total += len(tracks)
-    
-    text += f"📌 *Всего:* {total}"
-    
-    if len(text) > 4000:
-        parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
-        for part in parts:
-            await callback.message.answer(part, parse_mode="Markdown")
-    else:
-        await callback.message.answer(text, parse_mode="Markdown")
-    await callback.answer()
-
-@dp.callback_query(F.data == "back_to_menu")
-async def back_to_menu(callback: types.CallbackQuery):
-    await callback.message.answer(
-        "📋 *Главное меню*",
-        reply_markup=get_main_menu(),
-        parse_mode="Markdown"
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "cancel")
-async def cancel_callback(callback: types.CallbackQuery, state: FSMContext):
+    await message.answer(text, reply_markup=main_menu(user.id))
+@router.callback_query(F.data == "back_main")
+async def back_main(cb: CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.answer(
-        "❌ *Действие отменено*",
-        parse_mode="Markdown",
-        reply_markup=get_main_menu()
+    await cb.message.edit_text(
+        "🎵 <b>Главное меню</b>\n\nВыбери раздел:",
+        reply_markup=main_menu(cb.from_user.id)
     )
-    await callback.answer()
-
-# ---------- ЗАПУСК ----------
+    await cb.answer()
+# --- Категории (публичные) ---
+@router.callback_query(F.data.startswith("cat:"))
+async def show_category(cb: CallbackQuery):
+    category = cb.data.split(":")[1]
+    tracks = db_query(
+        "SELECT id, title, file_id FROM tracks WHERE category=? AND is_public=1",
+        (category,), fetch=True
+    )
+    if not tracks:
+        await cb.message.edit_text(
+            f"📭 В разделе <b>{category.capitalize()}</b> пока пусто.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
+            ])
+        )
+    else:
+        await cb.message.edit_text(
+            f"🎼 <b>{category.capitalize()}</b>\nТреков: {len(tracks)}\n\nВыбери, что послушать:",
+            reply_markup=category_menu(category, tracks, cb.from_user.id)
+        )
+    await cb.answer()
+# --- Мой плейлист ---
+@router.callback_query(F.data == "my_playlist")
+async def my_playlist(cb: CallbackQuery):
+    tracks = db_query(
+        "SELECT id, title, file_id FROM tracks WHERE category=? AND added_by=?",
+        (f"personal_{cb.from_user.id}", cb.from_user.id), fetch=True
+    )
+    if not tracks:
+        await cb.message.edit_text(
+            "⭐ <b>Твой плейлист пуст</b>\n\nДобавь свой первый трек через кнопку «➕ Добавить трек».",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="➕ Добавить", callback_data="add_track")],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
+            ])
+        )
+    else:
+        await cb.message.edit_text(
+            f"⭐ <b>Мой плейлист</b>\nТреков: {len(tracks)}",
+            reply_markup=category_menu("personal", tracks, cb.from_user.id, is_personal=True)
+        )
+    await cb.answer()
+# --- Воспроизведение трека ---
+@router.callback_query(F.data.startswith("play:"))
+async def play_track(cb: CallbackQuery):
+    track_id = int(cb.data.split(":")[1])
+    row = db_query("SELECT title, file_id FROM tracks WHERE id=?", (track_id,), fetch=True)
+    if not row:
+        await cb.answer("Трек не найден 😕", show_alert=True)
+        return
+    title, file_id = row[0]
+    try:
+        await cb.message.answer_audio(audio=file_id, caption=f"🎧 <b>{title}</b>")
+        await cb.answer("▶️ Играет!")
+    except Exception as e:
+        await cb.answer(f"Ошибка воспроизведения: {e}", show_alert=True)
+# --- Удаление трека ---
+@router.callback_query(F.data.startswith("del:"))
+async def delete_track(cb: CallbackQuery):
+    track_id = int(cb.data.split(":")[1])
+    row = db_query("SELECT category, added_by FROM tracks WHERE id=?", (track_id,), fetch=True)
+    if not row:
+        await cb.answer("Трек уже удалён", show_alert=True)
+        return
+    category, added_by = row[0]
+    is_personal = category.startswith("personal_")
+    # Права: админ удаляет всё, юзер — только свои личные
+    if cb.from_user.id != ADMIN_ID and not (is_personal and added_by == cb.from_user.id):
+        await cb.answer("⛔ У тебя нет прав удалять этот трек", show_alert=True)
+        return
+    db_query("DELETE FROM tracks WHERE id=?", (track_id,))
+    await cb.answer("🗑 Трек удалён")
+    # Обновим список
+    if is_personal:
+        await my_playlist(cb)
+    else:
+        cb.data = f"cat:{category}"
+        await show_category(cb)
+# --- Добавление трека ---
+@router.callback_query(F.data == "add_track")
+async def add_track_start(cb: CallbackQuery):
+    await cb.message.edit_text(
+        "➕ <b>Куда добавить трек?</b>",
+        reply_markup=add_track_menu(cb.from_user.id)
+    )
+    await cb.answer()
+@router.callback_query(F.data.startswith("addcat:"))
+async def add_track_category(cb: CallbackQuery, state: FSMContext):
+    category = cb.data.split(":")[1]
+    # Проверка прав на публичные категории
+    if category in ADMIN_CATEGORIES and cb.from_user.id != ADMIN_ID:
+        await cb.answer("⛔ Только админ может добавлять в общие разделы", show_alert=True)
+        return
+    if category == "personal":
+        category = f"personal_{cb.from_user.id}"
+    await state.update_data(category=category)
+    await state.set_state(AddTrack.waiting_audio)
+    await cb.message.edit_text(
+        "🎵 Отправь <b>аудиофайл</b> (mp3), который хочешь добавить.\n\n"
+        "<i>Для отмены — /cancel</i>"
+    )
+    await cb.answer()
+@router.message(Command("cancel"))
+async def cancel_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("❌ Действие отменено.", reply_markup=main_menu(message.from_user.id))
+@router.message(AddTrack.waiting_audio, F.audio)
+async def add_track_audio(message: Message, state: FSMContext):
+    await state.update_data(file_id=message.audio.file_id, default_title=message.audio.title or "Без названия")
+    await state.set_state(AddTrack.waiting_title)
+    await message.answer(
+        f"📝 Введи название трека (или отправь <code>-</code>, чтобы использовать «{message.audio.title or 'Без названия'}»):"
+    )
+@router.message(AddTrack.waiting_audio)
+async def add_track_wrong(message: Message):
+    await message.answer("⚠️ Отправь именно аудиофайл (mp3).")
+@router.message(AddTrack.waiting_title)
+async def add_track_title(message: Message, state: FSMContext):
+    data = await state.get_data()
+    title = message.text.strip() if message.text.strip() != "-" else data["default_title"]
+    category = data["category"]
+    is_public = 0 if category.startswith("personal_") else 1
+    db_query(
+        "INSERT INTO tracks (category, title, file_id, added_by, is_public) VALUES (?, ?, ?, ?, ?)",
+        (category, title, data["file_id"], message.from_user.id, is_public)
+    )
+    await state.clear()
+    await message.answer(
+        f"✅ Трек <b>{title}</b> добавлен!",
+        reply_markup=main_menu(message.from_user.id)
+    )
+# --- Донаты через Telegram Stars ---
+@router.callback_query(F.data == "donate")
+async def donate_menu_cb(cb: CallbackQuery):
+    text = (
+        "💖 <b>Поддержи разработчика</b>\n\n"
+        "Твои звёзды помогают развивать бота, добавлять новые фичи и держать сервер онлайн.\n\n"
+        "Выбери сумму:"
+    )
+    await cb.message.edit_text(text, reply_markup=donate_menu())
+    await cb.answer()
+@router.callback_query(F.data.startswith("pay:"))
+async def send_invoice(cb: CallbackQuery):
+    amount = int(cb.data.split(":")[1])
+    prices = [LabeledPrice(label=f"Поддержка {amount} ⭐", amount=amount)]
+    await cb.message.answer_invoice(
+        title="Поддержка бота 💖",
+        description=f"Спасибо за поддержку! Ты даришь {amount} звёзд разработчику.",
+        payload=f"donate_{cb.from_user.id}_{amount}",
+        provider_token="",  # Для Stars оставляем пустым
+        currency="XTR",     # Валюта Telegram Stars
+        prices=prices,
+    )
+    await cb.answer()
+@router.pre_checkout_query()
+async def pre_checkout(query: PreCheckoutQuery):
+    await query.answer(ok=True)
+@router.message(F.successful_payment)
+async def success_payment(message: Message):
+    amount = message.successful_payment.total_amount
+    db_query(
+        "UPDATE users SET stars_donated = stars_donated + ? WHERE user_id = ?",
+        (amount, message.from_user.id)
+    )
+    await message.answer(
+        f"🌟 <b>Спасибо огромное за {amount} звёзд!</b>\n"
+        f"Ты крутой(ая) 💖\n\n"
+        f"Твоя поддержка бесценна!",
+        reply_markup=main_menu(message.from_user.id)
+    )
+    # Уведомление админу
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"💰 Новый донат!\n"
+            f"От: @{message.from_user.username or message.from_user.id}\n"
+            f"Сумма: {amount} ⭐"
+        )
+    except Exception:
+        pass
+# --- Админ-панель ---
+@router.callback_query(F.data == "admin_panel")
+async def admin_panel_cb(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await cb.message.edit_text("👑 <b>Админ-панель</b>", reply_markup=admin_panel())
+    await cb.answer()
+@router.callback_query(F.data == "admin_stats")
+async def admin_stats(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("⛔", show_alert=True)
+        return
+    users = db_query("SELECT COUNT(*) FROM users", fetch=True)[0][0]
+    tracks_public = db_query("SELECT COUNT(*) FROM tracks WHERE is_public=1", fetch=True)[0][0]
+    tracks_personal = db_query("SELECT COUNT(*) FROM tracks WHERE is_public=0", fetch=True)[0][0]
+    text = (
+        f"📊 <b>Статистика</b>\n\n"
+        f"👥 Пользователей: <b>{users}</b>\n"
+        f"🎼 Публичных треков: <b>{tracks_public}</b>\n"
+        f"⭐ Личных плейлистов (треков): <b>{tracks_personal}</b>"
+    )
+    await cb.message.edit_text(text, reply_markup=admin_panel())
+    await cb.answer()
+@router.callback_query(F.data == "admin_donates")
+async def admin_donates(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("⛔", show_alert=True)
+        return
+    total = db_query("SELECT SUM(stars_donated) FROM users", fetch=True)[0][0] or 0
+    top = db_query(
+        "SELECT username, stars_donated FROM users WHERE stars_donated>0 ORDER BY stars_donated DESC LIMIT 10",
+        fetch=True
+    )
+    text = f"💰 <b>Донаты</b>\n\nВсего собрано: <b>{total} ⭐</b>\n\n<b>Топ поддержавших:</b>\n"
+    if top:
+        for i, (uname, stars) in enumerate(top, 1):
+            text += f"{i}. @{uname or 'аноним'} — {stars} ⭐\n"
+    else:
+        text += "<i>Пока никто не донатил</i>"
+    await cb.message.edit_text(text, reply_markup=admin_panel())
+    await cb.answer()
+# ==================== ЗАПУСК ====================
 async def main():
-    print("🎵 Музыкальный бот")
-    print("=" * 40)
-    print("📌 Категории:")
-    print("  🎻 Классика")
-    print("  🎧 Lo-Fi")
-    print("  🌿 Природа")
-    print("  🎵 Другое")
-    print("=" * 40)
-    print("📌 Команды:")
-    print("  /start  - Главное меню")
-    print("  /menu   - Меню")
-    print("  /random - Случайный трек")
-    print("  /add    - Добавить трек (админ)")
-    print("  /delete - Удалить трек (админ)")
-    print("  /list   - Список треков (админ)")
-    print("=" * 40)
-    print("💾 Файлы хранятся в папке 'music_files'")
-    print("📦 Данные в 'music_data.json'")
-    print("🤖 Бот запущен!")
-
+    init_db()
+    dp.include_router(router)
+    print("🎵 Music Bot запущен!")
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
-
 if __name__ == "__main__":
     asyncio.run(main())
